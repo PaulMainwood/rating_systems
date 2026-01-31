@@ -1,18 +1,18 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rating_systems"
 version = "0.1.0"
-description = "PyTorch-based implementations of Elo, Glicko, Glicko-2, WHR, and TrueSkill Through Time rating systems"
+description = "High-performance implementations of Elo, Glicko, Glicko-2, WHR, and TrueSkill Through Time rating systems"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [
     {name = "Paul Mainwood"}
 ]
-keywords = ["rating", "elo", "glicko", "trueskill", "whr", "pytorch", "machine-learning"]
+keywords = ["rating", "elo", "glicko", "trueskill", "whr", "numba", "machine-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -27,14 +27,22 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "torch>=1.9.0",
-    "pandas>=1.3.0",
+    "numpy>=1.20.0",
+    "numba>=0.55.0",
+    "polars>=0.19.0",
     "pyarrow>=6.0.0",
     "scipy>=1.7.0",
 ]
 
 [project.optional-dependencies]
+torch = [
+    "torch>=1.9.0",
+]
+all = [
+    "torch>=1.9.0",
+]
 dev = [
+    "torch>=1.9.0",
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
     "black>=22.0.0",
