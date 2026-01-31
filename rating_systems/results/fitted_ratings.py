@@ -923,3 +923,248 @@ class FittedWHRRatings:
             f"  Mean RD: {self.rd.mean():.1f}",
         ]
         return "\n".join(lines)
+
+
+@dataclass
+class FittedTTTRatings:
+    """
+    Queryable fitted TrueSkill Through Time (TTT) ratings.
+
+    Provides access to:
+    - Current ratings and uncertainties for all players
+    - Full rating history over time for each player
+    - Prediction methods accounting for uncertainty
+    - Top/bottom player queries
+
+    TTT models skill as evolving over time with Gaussian belief propagation,
+    providing globally consistent historical ratings.
+    """
+
+    ratings: np.ndarray  # Current (most recent) rating per player
+    rd: np.ndarray  # Current uncertainty per player
+    sigma: float = 1.5  # Prior skill std dev
+    beta: float = 0.5  # Performance variability
+    gamma: float = 0.01  # Skill drift rate
+    display_scale: float = 266.67  # Scale factor for display
+    display_offset: float = 1500.0  # Offset for display
+    num_games_fitted: int = 0
+    num_iterations: int = 0
+    last_day: Optional[int] = None
+    player_names: Optional[Dict[int, str]] = None
+    rating_history: Optional[Dict[int, Dict]] = None  # player_id -> {days, ratings, uncertainties}
+
+    # Cached
+    _ranks: Optional[np.ndarray] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        """Ensure arrays are contiguous."""
+        self.ratings = np.ascontiguousarray(self.ratings, dtype=np.float64)
+        self.rd = np.ascontiguousarray(self.rd, dtype=np.float64)
+        self._ranks = None
+
+    @property
+    def num_players(self) -> int:
+        return len(self.ratings)
+
+    @property
+    def ranks(self) -> np.ndarray:
+        """Lazily computed ranks array."""
+        if self._ranks is None:
+            self._ranks = _compute_ranks(self.ratings)
+        return self._ranks
+
+    def get_rating(self, player_id: int) -> Tuple[float, float]:
+        """Get (rating, uncertainty) for a single player."""
+        return float(self.ratings[player_id]), float(self.rd[player_id])
+
+    def get_name(self, player_id: int) -> str:
+        if self.player_names and player_id in self.player_names:
+            return self.player_names[player_id]
+        return f"Player_{player_id}"
+
+    def get_history(self, player_id: int) -> Optional[Dict]:
+        """
+        Get the full rating history for a player.
+
+        Returns:
+            Dict with 'days', 'ratings', 'uncertainties' arrays,
+            or None if player has no history.
+        """
+        if self.rating_history is None:
+            return None
+        return self.rating_history.get(player_id)
+
+    def get_rating_at_day(self, player_id: int, day: int) -> Optional[float]:
+        """
+        Get a player's rating at a specific day.
+
+        Returns the rating from the most recent game on or before the given day,
+        or None if the player has no games before that day.
+        """
+        history = self.get_history(player_id)
+        if history is None:
+            return None
+
+        days = history["days"]
+        ratings = history["ratings"]
+
+        # Find most recent day <= target day
+        for i in range(len(days) - 1, -1, -1):
+            if days[i] <= day:
+                return float(ratings[i])
+
+        return None
+
+    def predict(self, player1: int, player2: int) -> float:
+        """
+        Predict probability that player1 beats player2.
+
+        Uses the TrueSkill prediction formula accounting for
+        both skill and uncertainty.
+        """
+        import math
+
+        r1 = (self.ratings[player1] - self.display_offset) / self.display_scale
+        r2 = (self.ratings[player2] - self.display_offset) / self.display_scale
+        rd1 = self.rd[player1] / self.display_scale
+        rd2 = self.rd[player2] / self.display_scale
+
+        # Combined variance: 2*beta^2 + sigma1^2 + sigma2^2
+        c = math.sqrt(2.0 * self.beta ** 2 + rd1 ** 2 + rd2 ** 2)
+
+        diff = (r1 - r2) / c
+        # Use logistic approximation of probit
+        return 1.0 / (1.0 + math.exp(-1.7 * diff))
+
+    def predict_batch(
+        self,
+        player1: Union[List[int], np.ndarray],
+        player2: Union[List[int], np.ndarray],
+    ) -> np.ndarray:
+        """Predict outcomes for multiple matchups."""
+        p1 = np.asarray(player1)
+        p2 = np.asarray(player2)
+
+        r1 = (self.ratings[p1] - self.display_offset) / self.display_scale
+        r2 = (self.ratings[p2] - self.display_offset) / self.display_scale
+        rd1 = self.rd[p1] / self.display_scale
+        rd2 = self.rd[p2] / self.display_scale
+
+        c = np.sqrt(2.0 * self.beta ** 2 + rd1 ** 2 + rd2 ** 2)
+        diff = (r1 - r2) / c
+
+        return 1.0 / (1.0 + np.exp(-1.7 * np.clip(diff, -20, 20)))
+
+    def top(self, n: int = 10) -> pl.DataFrame:
+        """Get top N rated players."""
+        indices = get_top_n_indices(self.ratings, n)
+        return self._indices_to_dataframe(indices)
+
+    def bottom(self, n: int = 10) -> pl.DataFrame:
+        """Get bottom N rated players."""
+        indices = get_bottom_n_indices(self.ratings, n)
+        return self._indices_to_dataframe(indices)
+
+    def rank(self, player_id: int) -> int:
+        """Get rank of a specific player."""
+        return int(self.ranks[player_id])
+
+    def _indices_to_dataframe(self, indices: np.ndarray) -> pl.DataFrame:
+        return pl.DataFrame({
+            "rank": self.ranks[indices],
+            "player_id": indices,
+            "name": _get_names_vectorized(indices, self.player_names),
+            "rating": self.ratings[indices],
+            "rd": self.rd[indices],
+        })
+
+    def matchup(self, player1: int, player2: int) -> pl.DataFrame:
+        """Get detailed matchup analysis between two players."""
+        r1, rd1 = self.get_rating(player1)
+        r2, rd2 = self.get_rating(player2)
+        p1_wins = self.predict(player1, player2)
+
+        return pl.DataFrame({
+            "player_id": [player1, player2],
+            "name": [self.get_name(player1), self.get_name(player2)],
+            "rating": [r1, r2],
+            "rd": [rd1, rd2],
+            "win_prob": [p1_wins, 1.0 - p1_wins],
+        })
+
+    def confident_players(self, max_rd: float = 100.0, n: int = 10) -> pl.DataFrame:
+        """Get top players with low uncertainty (well-established ratings)."""
+        mask = self.rd <= max_rd
+        filtered_ratings = np.where(mask, self.ratings, -np.inf)
+        indices = get_top_n_indices(filtered_ratings, n)
+        indices = indices[mask[indices]]
+        return self._indices_to_dataframe(indices)
+
+    def active_players(self, min_days: int = 5, n: int = 10) -> pl.DataFrame:
+        """Get top players with at least min_days of activity."""
+        if self.rating_history is None:
+            return self.top(n)
+
+        mask = np.array([
+            len(self.rating_history.get(i, {}).get("days", [])) >= min_days
+            for i in range(self.num_players)
+        ])
+        filtered_ratings = np.where(mask, self.ratings, -np.inf)
+        indices = get_top_n_indices(filtered_ratings, n)
+        indices = indices[mask[indices]]
+        return self._indices_to_dataframe(indices)
+
+    def to_dataframe(self, include_rank: bool = True) -> pl.DataFrame:
+        """Export all ratings to DataFrame."""
+        player_ids = np.arange(self.num_players)
+
+        data = {
+            "player_id": player_ids,
+            "rating": self.ratings,
+            "rd": self.rd,
+        }
+
+        if include_rank:
+            data["rank"] = self.ranks
+
+        if self.player_names:
+            data["name"] = _get_names_vectorized(player_ids, self.player_names)
+
+        return pl.DataFrame(data).sort("rating", descending=True)
+
+    def history_to_dataframe(self, player_id: int) -> Optional[pl.DataFrame]:
+        """Export a player's rating history to DataFrame."""
+        history = self.get_history(player_id)
+        if history is None:
+            return None
+
+        return pl.DataFrame({
+            "day": history["days"],
+            "rating": history["ratings"],
+            "uncertainty": history["uncertainties"],
+        })
+
+    def save(self, path: str, include_rank: bool = False) -> None:
+        """Save fitted ratings to parquet."""
+        self.to_dataframe(include_rank=include_rank).write_parquet(path)
+
+    def __repr__(self) -> str:
+        return (
+            f"FittedTTTRatings(players={self.num_players}, "
+            f"games={self.num_games_fitted}, beta={self.beta}, "
+            f"iterations={self.num_iterations})"
+        )
+
+    def __str__(self) -> str:
+        lines = [
+            f"Fitted TrueSkill Through Time Ratings",
+            f"  Players: {self.num_players:,}",
+            f"  Games fitted: {self.num_games_fitted:,}",
+            f"  Sigma: {self.sigma}",
+            f"  Beta: {self.beta}",
+            f"  Gamma: {self.gamma}",
+            f"  Iterations: {self.num_iterations}",
+            f"  Rating range: {self.ratings.min():.1f} - {self.ratings.max():.1f}",
+            f"  Mean RD: {self.rd.mean():.1f}",
+        ]
+        return "\n".join(lines)

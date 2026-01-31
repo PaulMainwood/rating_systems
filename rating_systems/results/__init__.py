@@ -5,6 +5,7 @@ from .fitted_ratings import (
     FittedGlickoRatings,
     FittedGlicko2Ratings,
     FittedWHRRatings,
+    FittedTTTRatings,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "FittedGlickoRatings",
     "FittedGlicko2Ratings",
     "FittedWHRRatings",
+    "FittedTTTRatings",
 ]

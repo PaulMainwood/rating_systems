@@ -1,5 +1,5 @@
 """
-TrueSkill Through Time (TTT) implementation in PyTorch.
+TrueSkill Through Time (TTT) - High-performance Numba implementation.
 
 Based on:
 - Dangauthier et al., "TrueSkill Through Time: Revisiting the History of Chess" (2007)
@@ -7,17 +7,29 @@ Based on:
 
 TTT extends TrueSkill by modeling player skill as evolving over time using
 Gaussian belief propagation with forward-backward message passing.
+
+This implementation prioritizes efficiency through:
+1. Numba JIT compilation of all hot paths
+2. CSR-like data structures for player timelines
+3. Custom norm_cdf/norm_pdf (no scipy dependency)
+4. Parallel prediction via prange
 """
 
-import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 
-import torch
+import numpy as np
 
 from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameBatch, GameDataset
-from .gaussian import cdf
+from ...results.fitted_ratings import FittedTTTRatings
+from ._numba_core import (
+    run_all_iterations,
+    extract_ratings,
+    predict_proba_batch,
+    predict_single,
+    get_top_n_indices,
+)
 
 
 @dataclass
@@ -28,103 +40,40 @@ class TTTConfig:
     sigma: float = 1.5  # Prior skill std dev (internal scale)
     beta: float = 0.5  # Performance std dev (within-game noise)
     gamma: float = 0.01  # Skill dynamics per time unit
-    p_draw: float = 0.0  # Draw probability
     max_iterations: int = 30  # Max forward-backward iterations
     convergence_threshold: float = 1e-4  # Convergence threshold
 
 
-@dataclass
-class PlayerSkill:
-    """Skill state for a player at a specific time."""
-
-    day: int
-    day_idx: int
-
-    # Gaussian parameters (mu, sigma form for stability)
-    prior_mu: float = 0.0
-    prior_sigma: float = 6.0
-
-    # Forward message (from past)
-    forward_mu: float = 0.0
-    forward_sigma: float = 1e6  # Large = uninformative
-
-    # Backward message (from future)
-    backward_mu: float = 0.0
-    backward_sigma: float = 1e6
-
-    # Likelihood from games (in precision form)
-    likelihood_pi: float = 0.0  # Precision from games
-    likelihood_tau: float = 0.0  # Precision-weighted mean from games
-
-    # Games at this time: list of (opponent_id, opp_day_idx, score)
-    games: List[Tuple[int, int, float]] = field(default_factory=list)
-
-    def _get_prior_prec_tau(self) -> Tuple[float, float]:
-        """Get precision and tau from forward + backward only (no likelihood)."""
-        fwd_prec = 1.0 / (self.forward_sigma ** 2) if self.forward_sigma < 1e5 else 0.0
-        bwd_prec = 1.0 / (self.backward_sigma ** 2) if self.backward_sigma < 1e5 else 0.0
-
-        total_prec = fwd_prec + bwd_prec
-        if total_prec < 1e-10:
-            return 1.0 / (self.prior_sigma ** 2), self.prior_mu / (self.prior_sigma ** 2)
-
-        total_tau = fwd_prec * self.forward_mu + bwd_prec * self.backward_mu
-        return total_prec, total_tau
-
-    @property
-    def prior_from_messages_mu(self) -> float:
-        """Mean from forward+backward messages only."""
-        prec, tau = self._get_prior_prec_tau()
-        return tau / prec if prec > 1e-10 else self.prior_mu
-
-    @property
-    def prior_from_messages_sigma(self) -> float:
-        """Sigma from forward+backward messages only."""
-        prec, _ = self._get_prior_prec_tau()
-        return 1.0 / math.sqrt(prec) if prec > 1e-10 else self.prior_sigma
-
-    @property
-    def mu(self) -> float:
-        """Posterior mean (messages + likelihood)."""
-        prec, tau = self._get_prior_prec_tau()
-
-        # Add likelihood contribution
-        tau += self.likelihood_tau
-        prec += self.likelihood_pi
-
-        if prec < 1e-10:
-            return self.prior_mu
-        return tau / prec
-
-    @property
-    def sigma(self) -> float:
-        """Posterior std dev (messages + likelihood)."""
-        prec, _ = self._get_prior_prec_tau()
-        prec += self.likelihood_pi
-
-        if prec < 1e-10:
-            return self.prior_sigma
-        return 1.0 / math.sqrt(prec)
-
-
 class TrueSkillThroughTime(RatingSystem):
     """
-    TrueSkill Through Time rating system.
+    TrueSkill Through Time rating system with Numba acceleration.
 
     TTT models player skill as a Gaussian that evolves over time:
-    - Skill at time t: N(mu_t, sigma_t^2)
-    - Skill drift: sigma increases by gamma per time unit
+    - Skill at time t: N(μ_t, σ_t²)
+    - Skill drift: σ increases by γ√t per time unit
     - Game outcomes update beliefs via Gaussian message passing
 
     Uses forward-backward belief propagation for globally consistent estimates.
 
+    Performance characteristics:
+    - Fit: O(iterations * games) with Numba acceleration
+    - Predict: O(n) parallel across matchups
+    - Memory: O(total_player_days + total_games)
+
     Parameters:
-        mu: Prior mean skill (default: 0.0, displayed as 25.0)
-        sigma: Prior skill std dev (default: 6.0)
-        beta: Performance variability within games (default: 1.0)
-        gamma: Skill drift rate per time unit (default: 0.03)
-        p_draw: Draw probability (default: 0.0)
+        mu: Prior mean skill (default: 0.0, displayed as 1500)
+        sigma: Prior skill std dev (default: 1.5)
+        beta: Performance variability within games (default: 0.5)
+        gamma: Skill drift rate per time unit (default: 0.01)
         max_iterations: Max belief propagation iterations (default: 30)
+        convergence_threshold: Stop when max change < threshold
+
+    Example:
+        >>> ttt = TrueSkillThroughTime(sigma=1.5, beta=0.5)
+        >>> ttt.fit(dataset)
+        >>> fitted = ttt.get_fitted_ratings()
+        >>> print(fitted.top(10))
+        >>> print(fitted.predict(0, 1))
     """
 
     system_type = RatingSystemType.BATCH
@@ -139,337 +88,266 @@ class TrueSkillThroughTime(RatingSystem):
         sigma: float = 1.5,
         beta: float = 0.5,
         gamma: float = 0.01,
-        p_draw: float = 0.0,
         max_iterations: int = 30,
         convergence_threshold: float = 1e-4,
         num_players: Optional[int] = None,
-        device: Optional[torch.device] = None,
     ):
         self.config = TTTConfig(
             mu=mu,
             sigma=sigma,
             beta=beta,
             gamma=gamma,
-            p_draw=p_draw,
             max_iterations=max_iterations,
             convergence_threshold=convergence_threshold,
         )
 
-        # Player skill timelines: player_id -> list of PlayerSkill
-        self._player_skills: Dict[int, List[PlayerSkill]] = {}
+        # Data structures (CSR-like format for Numba)
+        self._player_offsets: Optional[np.ndarray] = None
+        self._pd_days: Optional[np.ndarray] = None
+        self._pd_forward_mu: Optional[np.ndarray] = None
+        self._pd_forward_sigma: Optional[np.ndarray] = None
+        self._pd_backward_mu: Optional[np.ndarray] = None
+        self._pd_backward_sigma: Optional[np.ndarray] = None
+        self._pd_likelihood_pi: Optional[np.ndarray] = None
+        self._pd_likelihood_tau: Optional[np.ndarray] = None
+        self._pd_game_offsets: Optional[np.ndarray] = None
+        self._pd_game_opp_pd: Optional[np.ndarray] = None
+        self._pd_game_score: Optional[np.ndarray] = None
 
-        # Index: (player_id, day) -> day_idx
-        self._day_index: Dict[Tuple[int, int], int] = {}
+        # Metadata
+        self._num_games_fitted = 0
+        self._num_iterations = 0
+        self._player_names: Optional[Dict[int, str]] = None
 
-        # All games for refitting
-        self._all_games: List[GameBatch] = []
+        # Store raw data for refitting
+        self._stored_player1: Optional[np.ndarray] = None
+        self._stored_player2: Optional[np.ndarray] = None
+        self._stored_scores: Optional[np.ndarray] = None
+        self._stored_days: Optional[np.ndarray] = None
 
-        super().__init__(num_players=num_players, device=device)
+        super().__init__(num_players=num_players)
 
     def _initialize_ratings(self, num_players: int) -> PlayerRatings:
         """Create initial TTT ratings."""
         return PlayerRatings(
-            ratings=torch.full(
-                (num_players,),
-                self.DISPLAY_OFFSET,
-                dtype=torch.float32,
-                device=self.device,
-            ),
-            rd=torch.full(
-                (num_players,),
-                self.config.sigma * self.DISPLAY_SCALE,
-                dtype=torch.float32,
-                device=self.device,
-            ),
-            device=self.device,
+            ratings=np.full(num_players, self.DISPLAY_OFFSET, dtype=np.float64),
+            rd=np.full(num_players, self.config.sigma * self.DISPLAY_SCALE, dtype=np.float64),
             metadata={"system": "ttt", "config": self.config},
         )
 
-    def _get_or_create_skill(self, player_id: int, day: int) -> PlayerSkill:
-        """Get or create a PlayerSkill for a player on a specific day."""
-        key = (player_id, day)
-        if key in self._day_index:
-            idx = self._day_index[key]
-            return self._player_skills[player_id][idx]
+    def _build_data_structures(
+        self,
+        player1: np.ndarray,
+        player2: np.ndarray,
+        scores: np.ndarray,
+        days: np.ndarray,
+        num_players: int,
+    ) -> None:
+        """
+        Build CSR-like data structures from game arrays.
 
-        if player_id not in self._player_skills:
-            self._player_skills[player_id] = []
+        Converts raw game data into the format needed by Numba:
+        - Player timelines with their active days
+        - Games per player-day with opponent references
+        """
+        n_games = len(player1)
 
-        # Find insertion point
-        skills_list = self._player_skills[player_id]
-        insert_idx = 0
-        for i, sk in enumerate(skills_list):
-            if sk.day > day:
-                break
-            insert_idx = i + 1
+        # Step 1: Identify unique (player, day) pairs
+        player_day_map: Dict[Tuple[int, int], int] = {}
+        player_day_list: List[Tuple[int, int]] = []
 
-        # Create new skill with prior
-        new_skill = PlayerSkill(
-            day=day,
-            day_idx=insert_idx,
-            prior_mu=self.config.mu,
-            prior_sigma=self.config.sigma,
-        )
-        skills_list.insert(insert_idx, new_skill)
+        for i in range(n_games):
+            p1, p2, day = int(player1[i]), int(player2[i]), int(days[i])
 
-        # Update indices
-        for i in range(insert_idx, len(skills_list)):
-            skills_list[i].day_idx = i
-            self._day_index[(player_id, skills_list[i].day)] = i
+            key1 = (p1, day)
+            if key1 not in player_day_map:
+                player_day_map[key1] = len(player_day_list)
+                player_day_list.append(key1)
 
-        return new_skill
+            key2 = (p2, day)
+            if key2 not in player_day_map:
+                player_day_map[key2] = len(player_day_list)
+                player_day_list.append(key2)
 
-    def _build_graph(self, batches: List[GameBatch]) -> None:
-        """Build the game graph from batches."""
-        self._player_skills.clear()
-        self._day_index.clear()
+        total_pd = len(player_day_list)
 
-        # First pass: create skill nodes
-        for batch in batches:
-            day = batch.day
-            for i in range(len(batch)):
-                p1 = batch.player1[i].item()
-                p2 = batch.player2[i].item()
-                self._get_or_create_skill(p1, day)
-                self._get_or_create_skill(p2, day)
+        # Step 2: Sort player-days by (player_id, day) and build offsets
+        player_day_list.sort(key=lambda x: (x[0], x[1]))
 
-        # Second pass: add games
-        for batch in batches:
-            day = batch.day
-            for i in range(len(batch)):
-                p1 = batch.player1[i].item()
-                p2 = batch.player2[i].item()
-                score = batch.scores[i].item()
+        # Rebuild mapping with sorted indices
+        sorted_map: Dict[Tuple[int, int], int] = {}
+        for new_idx, (pid, day) in enumerate(player_day_list):
+            sorted_map[(pid, day)] = new_idx
 
-                p1_idx = self._day_index[(p1, day)]
-                p2_idx = self._day_index[(p2, day)]
+        # Build player_offsets
+        self._player_offsets = np.zeros(num_players + 1, dtype=np.int64)
+        for pid, _ in player_day_list:
+            self._player_offsets[pid + 1] += 1
+        np.cumsum(self._player_offsets, out=self._player_offsets)
 
-                self._player_skills[p1][p1_idx].games.append((p2, p2_idx, score))
-                self._player_skills[p2][p2_idx].games.append((p1, p1_idx, 1.0 - score))
+        # Build pd_days array
+        self._pd_days = np.empty(total_pd, dtype=np.int32)
+        for idx, (_, day) in enumerate(player_day_list):
+            self._pd_days[idx] = day
 
-    def _compute_drift_sigma(self, elapsed: int) -> float:
-        """Compute additional sigma due to skill drift."""
-        if elapsed <= 0:
-            return 0.0
-        gamma = self.config.gamma
-        sigma = self.config.sigma
-        # Cap drift at 1.67 * sigma
-        return min(math.sqrt(elapsed) * gamma, 1.67 * sigma)
+        # Initialize message arrays
+        self._pd_forward_mu = np.zeros(total_pd, dtype=np.float64)
+        self._pd_forward_sigma = np.full(total_pd, 1e6, dtype=np.float64)
+        self._pd_backward_mu = np.zeros(total_pd, dtype=np.float64)
+        self._pd_backward_sigma = np.full(total_pd, 1e6, dtype=np.float64)
+        self._pd_likelihood_pi = np.zeros(total_pd, dtype=np.float64)
+        self._pd_likelihood_tau = np.zeros(total_pd, dtype=np.float64)
 
-    def _add_variances(self, sigma1: float, sigma2: float) -> float:
-        """Add two independent Gaussian variances."""
-        return math.sqrt(sigma1 ** 2 + sigma2 ** 2)
+        # Step 3: Count games per player-day
+        pd_game_counts = np.zeros(total_pd, dtype=np.int64)
+        for i in range(n_games):
+            p1, p2, day = int(player1[i]), int(player2[i]), int(days[i])
+            pd1 = sorted_map[(p1, day)]
+            pd2 = sorted_map[(p2, day)]
+            pd_game_counts[pd1] += 1
+            pd_game_counts[pd2] += 1
 
-    def _forward_pass(self) -> float:
-        """Run forward pass: propagate beliefs from past to future."""
-        max_change = 0.0
+        # Build game offsets
+        self._pd_game_offsets = np.zeros(total_pd + 1, dtype=np.int64)
+        np.cumsum(pd_game_counts, out=self._pd_game_offsets[1:])
 
-        for player_id, skills_list in self._player_skills.items():
-            # Start with prior
-            prev_mu = self.config.mu
-            prev_sigma = self.config.sigma
-            prev_day = skills_list[0].day if skills_list else 0
+        total_game_refs = self._pd_game_offsets[-1]
 
-            for skill in skills_list:
-                # Apply drift
-                elapsed = skill.day - prev_day
-                drift_sigma = self._compute_drift_sigma(elapsed)
-                msg_sigma = self._add_variances(prev_sigma, drift_sigma)
+        # Step 4: Fill game arrays
+        self._pd_game_opp_pd = np.empty(total_game_refs, dtype=np.int64)
+        self._pd_game_score = np.empty(total_game_refs, dtype=np.float64)
 
-                # Update forward message
-                old_mu = skill.forward_mu
-                skill.forward_mu = prev_mu
-                skill.forward_sigma = msg_sigma
+        pd_game_pos = self._pd_game_offsets[:-1].copy()
 
-                max_change = max(max_change, abs(skill.forward_mu - old_mu))
+        for i in range(n_games):
+            p1, p2, day = int(player1[i]), int(player2[i]), int(days[i])
+            score = float(scores[i])
 
-                # Prepare for next: use current posterior
-                prev_mu = skill.mu
-                prev_sigma = skill.sigma
-                prev_day = skill.day
+            pd1 = sorted_map[(p1, day)]
+            pd2 = sorted_map[(p2, day)]
 
-        return max_change
+            # Add game from player1's perspective
+            pos1 = pd_game_pos[pd1]
+            self._pd_game_opp_pd[pos1] = pd2
+            self._pd_game_score[pos1] = score
+            pd_game_pos[pd1] += 1
 
-    def _backward_pass(self) -> float:
-        """Run backward pass: propagate beliefs from future to past."""
-        max_change = 0.0
+            # Add game from player2's perspective
+            pos2 = pd_game_pos[pd2]
+            self._pd_game_opp_pd[pos2] = pd1
+            self._pd_game_score[pos2] = 1.0 - score
+            pd_game_pos[pd2] += 1
 
-        for player_id, skills_list in self._player_skills.items():
-            # Start uninformative
-            prev_mu = 0.0
-            prev_sigma = 1e6
-            prev_day = skills_list[-1].day if skills_list else 0
-
-            for skill in reversed(skills_list):
-                # Apply drift
-                elapsed = prev_day - skill.day
-                drift_sigma = self._compute_drift_sigma(elapsed)
-                msg_sigma = self._add_variances(prev_sigma, drift_sigma)
-
-                # Update backward message
-                old_mu = skill.backward_mu
-                skill.backward_mu = prev_mu
-                skill.backward_sigma = msg_sigma
-
-                max_change = max(max_change, abs(skill.backward_mu - old_mu))
-
-                # Prepare for next
-                prev_mu = skill.mu
-                prev_sigma = skill.sigma
-                prev_day = skill.day
-
-        return max_change
-
-    def _v_function(self, t: float, eps: float = 1e-10) -> float:
-        """Compute v = pdf(t) / cdf(-t) for truncated Gaussian."""
-        from scipy.stats import norm
-        denom = norm.cdf(-t)
-        if denom < eps:
-            return -t + 1.0 / (-t) if t < -5 else 10.0
-        return norm.pdf(t) / denom
-
-    def _w_function(self, t: float, v: float = None) -> float:
-        """Compute w = v * (v + t)."""
-        if v is None:
-            v = self._v_function(t)
-        w = v * (v + t)
-        return max(0.0, min(w, 1.0 - 1e-6))
-
-    def _update_likelihoods(self) -> float:
-        """Update likelihood messages from games."""
-        max_change = 0.0
-        beta = self.config.beta
-
-        for player_id, skills_list in self._player_skills.items():
-            for skill in skills_list:
-                if not skill.games:
-                    skill.likelihood_pi = 0.0
-                    skill.likelihood_tau = 0.0
-                    continue
-
-                # Use prior from messages only (not including current likelihood)
-                my_mu = skill.prior_from_messages_mu
-                my_sigma = skill.prior_from_messages_sigma
-                my_var = my_sigma ** 2
-
-                # Aggregate likelihood updates
-                total_pi = 0.0
-                total_tau = 0.0
-
-                for opp_id, opp_day_idx, score in skill.games:
-                    opp_skill = self._player_skills[opp_id][opp_day_idx]
-                    opp_mu = opp_skill.prior_from_messages_mu
-                    opp_var = opp_skill.prior_from_messages_sigma ** 2
-
-                    # Performance difference: d ~ N(mu1-mu2, var1+var2+2*beta^2)
-                    diff_mu = my_mu - opp_mu
-                    diff_var = my_var + opp_var + 2 * beta**2
-                    diff_sigma = math.sqrt(diff_var)
-
-                    if diff_sigma < 1e-10:
-                        continue
-
-                    t = diff_mu / diff_sigma
-
-                    if score > 0.5:  # Win
-                        v = self._v_function(t)
-                        w = self._w_function(t, v)
-                    else:  # Loss
-                        v = -self._v_function(-t)
-                        w = self._w_function(-t)
-
-                    # Clamp w for stability
-                    w = max(1e-6, min(w, 1.0 - 1e-6))
-
-                    # My contribution factor
-                    c = (my_var + beta**2) / diff_var
-
-                    # Truncated Gaussian update
-                    new_mu = my_mu + c * diff_sigma * v
-                    new_var = my_var * (1 - c * w)
-                    new_var = max(new_var, 1e-6)
-
-                    # Convert to precision form for this game's contribution
-                    game_pi = 1.0 / new_var - 1.0 / my_var
-                    game_tau = new_mu / new_var - my_mu / my_var
-
-                    # Clamp for stability
-                    game_pi = max(0.0, min(game_pi, 10.0))
-                    game_tau = max(-10.0, min(game_tau, 10.0))
-
-                    total_pi += game_pi
-                    total_tau += game_tau
-
-                old_pi = skill.likelihood_pi
-                skill.likelihood_pi = total_pi
-                skill.likelihood_tau = total_tau
-
-                max_change = max(max_change, abs(skill.likelihood_pi - old_pi))
-
-        return max_change
-
-    def _run_iterations(self) -> None:
-        """Run forward-backward iterations until convergence."""
-        for iteration in range(self.config.max_iterations):
-            fwd_change = self._forward_pass()
-            lik_change = self._update_likelihoods()
-            bwd_change = self._backward_pass()
-            lik_change2 = self._update_likelihoods()
-
-            max_change = max(fwd_change, bwd_change, lik_change, lik_change2)
-
-            if max_change < self.config.convergence_threshold:
-                break
-
-    def _extract_current_ratings(self) -> None:
-        """Extract the most recent rating for each player."""
-        if self._num_players is None:
+    def _run_optimization(self) -> None:
+        """Run forward-backward belief propagation."""
+        if self._player_offsets is None or self._num_players is None:
             return
 
-        ratings = torch.full(
-            (self._num_players,),
-            self.DISPLAY_OFFSET,
-            dtype=torch.float32,
-            device=self.device,
-        )
-        uncertainties = torch.full(
-            (self._num_players,),
-            self.config.sigma * self.DISPLAY_SCALE,
-            dtype=torch.float32,
-            device=self.device,
+        self._num_iterations = run_all_iterations(
+            self._num_players,
+            self._player_offsets,
+            self._pd_days,
+            self._pd_forward_mu,
+            self._pd_forward_sigma,
+            self._pd_backward_mu,
+            self._pd_backward_sigma,
+            self._pd_likelihood_pi,
+            self._pd_likelihood_tau,
+            self._pd_game_offsets,
+            self._pd_game_opp_pd,
+            self._pd_game_score,
+            self.config.mu,
+            self.config.sigma,
+            self.config.beta,
+            self.config.gamma,
+            self.config.max_iterations,
+            self.config.convergence_threshold,
         )
 
-        for player_id, skills_list in self._player_skills.items():
-            if skills_list:
-                last_skill = skills_list[-1]
-                # Convert to display scale
-                ratings[player_id] = last_skill.mu * self.DISPLAY_SCALE + self.DISPLAY_OFFSET
-                uncertainties[player_id] = last_skill.sigma * self.DISPLAY_SCALE
+    def _extract_current_ratings(self) -> None:
+        """Extract most recent ratings for each player."""
+        if self._num_players is None or self._player_offsets is None:
+            return
+
+        ratings = np.empty(self._num_players, dtype=np.float64)
+        rd = np.empty(self._num_players, dtype=np.float64)
+
+        extract_ratings(
+            self._num_players,
+            self._player_offsets,
+            self._pd_forward_mu,
+            self._pd_forward_sigma,
+            self._pd_backward_mu,
+            self._pd_backward_sigma,
+            self._pd_likelihood_pi,
+            self._pd_likelihood_tau,
+            ratings,
+            rd,
+            self.config.mu,
+            self.config.sigma,
+            self.DISPLAY_SCALE,
+            self.DISPLAY_OFFSET,
+        )
 
         self._ratings = PlayerRatings(
             ratings=ratings,
-            rd=uncertainties,
-            device=self.device,
+            rd=rd,
             metadata={"system": "ttt", "config": self.config},
         )
 
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
         """Update ratings with a new batch (refits on all data)."""
-        self._all_games.append(batch)
+        if self._stored_player1 is None:
+            self._stored_player1 = batch.player1.copy()
+            self._stored_player2 = batch.player2.copy()
+            self._stored_scores = batch.scores.copy()
+            self._stored_days = np.full(len(batch), batch.day, dtype=np.int32)
+        else:
+            self._stored_player1 = np.concatenate([self._stored_player1, batch.player1])
+            self._stored_player2 = np.concatenate([self._stored_player2, batch.player2])
+            self._stored_scores = np.concatenate([self._stored_scores, batch.scores])
+            self._stored_days = np.concatenate([
+                self._stored_days,
+                np.full(len(batch), batch.day, dtype=np.int32)
+            ])
+
         self._refit()
 
     def _refit(self) -> None:
-        """Refit on all stored games."""
-        self._build_graph(self._all_games)
-        self._run_iterations()
+        """Refit on all stored data."""
+        if self._stored_player1 is None:
+            return
+
+        self._build_data_structures(
+            self._stored_player1,
+            self._stored_player2,
+            self._stored_scores,
+            self._stored_days,
+            self._num_players,
+        )
+        self._run_optimization()
         self._extract_current_ratings()
+        self._num_games_fitted = len(self._stored_player1)
 
     def fit(
         self,
         dataset: GameDataset,
         end_day: Optional[int] = None,
+        player_names: Optional[Dict[int, str]] = None,
     ) -> "TrueSkillThroughTime":
-        """Fit TTT on a dataset."""
+        """
+        Fit TTT on a dataset.
+
+        Args:
+            dataset: Game dataset to fit on
+            end_day: Last day to include (inclusive). Useful for backtesting.
+            player_names: Optional mapping of player_id -> name
+
+        Returns:
+            self (for method chaining)
+        """
+        self._player_names = player_names
+
         if end_day is not None:
             dataset = dataset.filter_days(end_day=end_day)
 
@@ -477,12 +355,38 @@ class TrueSkillThroughTime(RatingSystem):
             self._num_players = dataset.num_players
             self._ratings = self._initialize_ratings(self._num_players)
 
-        self._all_games = list(dataset.iter_days())
-        self._refit()
+        # Get batched arrays
+        player1, player2, scores, day_indices, day_offsets = dataset.get_batched_arrays()
 
+        if player1 is None or len(player1) == 0:
+            self._fitted = True
+            return self
+
+        # Create per-game day array
+        n_games = len(player1)
+        days = np.empty(n_games, dtype=np.int32)
+        n_days = len(day_indices)
+        for d in range(n_days):
+            start = day_offsets[d]
+            end = day_offsets[d + 1]
+            days[start:end] = day_indices[d]
+
+        # Store for potential refitting
+        self._stored_player1 = player1.copy()
+        self._stored_player2 = player2.copy()
+        self._stored_scores = scores.copy()
+        self._stored_days = days
+
+        # Build data structures and optimize
+        self._build_data_structures(
+            player1, player2, scores, days, self._num_players
+        )
+        self._run_optimization()
+        self._extract_current_ratings()
+
+        self._num_games_fitted = n_games
         self._fitted = True
-        if self._all_games:
-            self._current_day = max(b.day for b in self._all_games)
+        self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
 
         return self
 
@@ -491,60 +395,181 @@ class TrueSkillThroughTime(RatingSystem):
         if not self._fitted:
             raise ValueError("Model must be fitted before updating")
 
-        batch = batch.to(self.device)
-        self._all_games.append(batch)
-        self._refit()
+        self._update_ratings(batch, self._ratings)
         self._current_day = batch.day
 
         return self
 
     def predict_proba(
         self,
-        player1: torch.Tensor,
-        player2: torch.Tensor,
-    ) -> torch.Tensor:
-        """Predict probability that player1 beats player2."""
+        player1: Union[int, np.ndarray, List[int]],
+        player2: Union[int, np.ndarray, List[int]],
+    ) -> Union[float, np.ndarray]:
+        """
+        Predict probability that player1 beats player2.
+
+        Args:
+            player1: Single player ID or array of player IDs
+            player2: Single player ID or array of player IDs
+
+        Returns:
+            Single probability or array of probabilities
+        """
         if self._ratings is None:
             raise ValueError("Model not fitted")
 
-        player1 = player1.to(self.device)
-        player2 = player2.to(self.device)
+        # Handle single prediction
+        if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
+            return predict_single(
+                self._ratings.ratings[int(player1)],
+                self._ratings.ratings[int(player2)],
+                self._ratings.rd[int(player1)],
+                self._ratings.rd[int(player2)],
+                self.config.beta,
+                self.DISPLAY_SCALE,
+                self.DISPLAY_OFFSET,
+            )
 
-        # Ratings are in display scale, convert back for prediction
-        mu1 = (self._ratings.ratings[player1] - self.DISPLAY_OFFSET) / self.DISPLAY_SCALE
-        mu2 = (self._ratings.ratings[player2] - self.DISPLAY_OFFSET) / self.DISPLAY_SCALE
-        sigma1 = self._ratings.rd[player1] / self.DISPLAY_SCALE
-        sigma2 = self._ratings.rd[player2] / self.DISPLAY_SCALE
+        # Batch prediction
+        p1 = np.ascontiguousarray(player1, dtype=np.int64)
+        p2 = np.ascontiguousarray(player2, dtype=np.int64)
+        return predict_proba_batch(
+            p1, p2,
+            self._ratings.ratings,
+            self._ratings.rd,
+            self.config.beta,
+            self.DISPLAY_SCALE,
+            self.DISPLAY_OFFSET,
+        )
 
-        beta = self.config.beta
+    def get_fitted_ratings(self) -> FittedTTTRatings:
+        """
+        Get a queryable fitted ratings object.
 
-        # diff ~ N(mu1 - mu2, sigma1^2 + sigma2^2 + 2*beta^2)
-        diff_mu = mu1 - mu2
-        diff_sigma = torch.sqrt(sigma1**2 + sigma2**2 + 2 * beta**2)
+        Returns:
+            FittedTTTRatings with methods for querying results
+        """
+        if self._ratings is None:
+            raise ValueError("Model not fitted")
 
-        # P(player1 wins) = P(diff > 0)
-        return cdf(diff_mu / diff_sigma)
+        # Build rating history per player
+        rating_history = {}
+        if self._player_offsets is not None:
+            for pid in range(self._num_players):
+                pd_start = self._player_offsets[pid]
+                pd_end = self._player_offsets[pid + 1]
+                if pd_end > pd_start:
+                    # Compute posteriors for each player-day
+                    n = pd_end - pd_start
+                    ratings = np.empty(n, dtype=np.float64)
+                    uncertainties = np.empty(n, dtype=np.float64)
+
+                    for i in range(n):
+                        pd_idx = pd_start + i
+                        # Get posterior
+                        fwd_prec = 1.0 / (self._pd_forward_sigma[pd_idx] ** 2) if self._pd_forward_sigma[pd_idx] < 1e5 else 0.0
+                        bwd_prec = 1.0 / (self._pd_backward_sigma[pd_idx] ** 2) if self._pd_backward_sigma[pd_idx] < 1e5 else 0.0
+                        total_prec = fwd_prec + bwd_prec + self._pd_likelihood_pi[pd_idx]
+
+                        if total_prec > 1e-10:
+                            total_tau = (fwd_prec * self._pd_forward_mu[pd_idx] +
+                                        bwd_prec * self._pd_backward_mu[pd_idx] +
+                                        self._pd_likelihood_tau[pd_idx])
+                            mu = total_tau / total_prec
+                            sigma = 1.0 / np.sqrt(total_prec)
+                        else:
+                            mu = self.config.mu
+                            sigma = self.config.sigma
+
+                        ratings[i] = mu * self.DISPLAY_SCALE + self.DISPLAY_OFFSET
+                        uncertainties[i] = sigma * self.DISPLAY_SCALE
+
+                    rating_history[pid] = {
+                        "days": self._pd_days[pd_start:pd_end].copy(),
+                        "ratings": ratings,
+                        "uncertainties": uncertainties,
+                    }
+
+        return FittedTTTRatings(
+            ratings=self._ratings.ratings.copy(),
+            rd=self._ratings.rd.copy(),
+            sigma=self.config.sigma,
+            beta=self.config.beta,
+            gamma=self.config.gamma,
+            display_scale=self.DISPLAY_SCALE,
+            display_offset=self.DISPLAY_OFFSET,
+            num_games_fitted=self._num_games_fitted,
+            num_iterations=self._num_iterations,
+            last_day=self._current_day,
+            player_names=self._player_names,
+            rating_history=rating_history,
+        )
 
     def get_rating_history(self, player_id: int) -> Optional[Dict]:
         """Get the full rating history for a player."""
-        if player_id not in self._player_skills:
+        if self._player_offsets is None:
             return None
 
-        skills_list = self._player_skills[player_id]
-        if not skills_list:
+        pd_start = self._player_offsets[player_id]
+        pd_end = self._player_offsets[player_id + 1]
+
+        if pd_end <= pd_start:
             return None
+
+        n = pd_end - pd_start
+        ratings = []
+        uncertainties = []
+
+        for i in range(n):
+            pd_idx = pd_start + i
+            fwd_prec = 1.0 / (self._pd_forward_sigma[pd_idx] ** 2) if self._pd_forward_sigma[pd_idx] < 1e5 else 0.0
+            bwd_prec = 1.0 / (self._pd_backward_sigma[pd_idx] ** 2) if self._pd_backward_sigma[pd_idx] < 1e5 else 0.0
+            total_prec = fwd_prec + bwd_prec + self._pd_likelihood_pi[pd_idx]
+
+            if total_prec > 1e-10:
+                total_tau = (fwd_prec * self._pd_forward_mu[pd_idx] +
+                            bwd_prec * self._pd_backward_mu[pd_idx] +
+                            self._pd_likelihood_tau[pd_idx])
+                mu = total_tau / total_prec
+                sigma = 1.0 / np.sqrt(total_prec)
+            else:
+                mu = self.config.mu
+                sigma = self.config.sigma
+
+            ratings.append(mu * self.DISPLAY_SCALE + self.DISPLAY_OFFSET)
+            uncertainties.append(sigma * self.DISPLAY_SCALE)
 
         return {
-            "days": [sk.day for sk in skills_list],
-            "ratings": [sk.mu * self.DISPLAY_SCALE + self.DISPLAY_OFFSET for sk in skills_list],
-            "uncertainties": [sk.sigma * self.DISPLAY_SCALE for sk in skills_list],
+            "days": self._pd_days[pd_start:pd_end].tolist(),
+            "ratings": ratings,
+            "uncertainties": uncertainties,
         }
+
+    def top(self, n: int = 10) -> np.ndarray:
+        """Get indices of top N rated players (convenience method)."""
+        if self._ratings is None:
+            raise ValueError("Model not fitted")
+        return get_top_n_indices(self._ratings.ratings, n)
 
     def reset(self) -> "TrueSkillThroughTime":
         """Reset the rating system."""
-        self._player_skills.clear()
-        self._day_index.clear()
-        self._all_games.clear()
+        self._player_offsets = None
+        self._pd_days = None
+        self._pd_forward_mu = None
+        self._pd_forward_sigma = None
+        self._pd_backward_mu = None
+        self._pd_backward_sigma = None
+        self._pd_likelihood_pi = None
+        self._pd_likelihood_tau = None
+        self._pd_game_offsets = None
+        self._pd_game_opp_pd = None
+        self._pd_game_score = None
+        self._stored_player1 = None
+        self._stored_player2 = None
+        self._stored_scores = None
+        self._stored_days = None
+        self._num_games_fitted = 0
+        self._num_iterations = 0
         return super().reset()
 
     def __repr__(self) -> str:
