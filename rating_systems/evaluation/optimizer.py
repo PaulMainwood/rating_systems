@@ -69,6 +69,7 @@ class RatingSystemOptimizer:
         dataset: GameDataset,
         train_ratio: float = 0.7,
         fixed_params: Optional[Dict[str, Any]] = None,
+        max_test_days: Optional[int] = None,
     ):
         """
         Initialize optimizer.
@@ -78,16 +79,25 @@ class RatingSystemOptimizer:
             dataset: Full game dataset
             train_ratio: Fraction of days for initial training (default 0.7)
             fixed_params: Parameters to keep fixed during optimization
+            max_test_days: Limit test period to this many days (for faster optimization)
         """
         self.system_class = system_class
         self.dataset = dataset
         self.train_ratio = train_ratio
         self.fixed_params = fixed_params or {}
+        self.max_test_days = max_test_days
 
         # Compute train/test split day
         days = dataset.days
         split_idx = int(len(days) * train_ratio)
         self.train_end_day = days[split_idx - 1] if split_idx > 0 else days[0]
+
+        # Optionally limit test period
+        self.test_end_day = None
+        if max_test_days is not None:
+            test_days = [d for d in days if d > self.train_end_day]
+            if len(test_days) > max_test_days:
+                self.test_end_day = test_days[max_test_days - 1]
 
         # Tracking
         self._eval_count = 0
@@ -121,6 +131,7 @@ class RatingSystemOptimizer:
             backtester = Backtester(system, self.dataset)
             result = backtester.run(
                 train_end_day=self.train_end_day,
+                test_end_day=self.test_end_day,
                 verbose=False,
             )
 
@@ -148,20 +159,20 @@ class RatingSystemOptimizer:
         self._history.append(entry)
 
         # Update best
-        if brier < self._best_brier:
+        is_best = brier < self._best_brier
+        if is_best:
             self._best_brier = brier
             self._best_params = params.copy()
             self._best_result = result
 
-            if self._verbose:
-                elapsed = time.time() - self._start_time
-                params_str = ", ".join(f"{k}={v:.4f}" for k, v in params.items()
-                                       if k in self._param_names)
-                print(f"  [{self._eval_count:3d}] NEW BEST: Brier={brier:.6f}, "
-                      f"Acc={accuracy:.4f} | {params_str} ({elapsed:.1f}s)")
-        elif self._verbose and self._eval_count % 5 == 0:
+        # Always print every iteration with full details
+        if self._verbose:
             elapsed = time.time() - self._start_time
-            print(f"  [{self._eval_count:3d}] Brier={brier:.6f} ({elapsed:.1f}s)")
+            params_str = ", ".join(f"{k}={v:.4f}" for k, v in params.items()
+                                   if k in self._param_names)
+            best_marker = " *BEST*" if is_best else ""
+            print(f"  [{self._eval_count:3d}] Brier={brier:.6f} LogLoss={log_loss:.6f} "
+                  f"| {params_str} ({elapsed:.1f}s){best_marker}")
 
         return brier
 
@@ -209,6 +220,10 @@ class RatingSystemOptimizer:
             print(f"Bounds: {bounds}")
             print(f"Max iterations: {maxiter}")
             print(f"Train/test split at day: {self.train_end_day}")
+            if self.test_end_day:
+                test_days = len([d for d in self.dataset.days
+                                if self.train_end_day < d <= self.test_end_day])
+                print(f"Test period limited to: {test_days} days (ending day {self.test_end_day})")
             print(f"Dataset: {self.dataset.num_games:,} games, "
                   f"{self.dataset.num_players:,} players")
             print(f"{'='*60}\n")
@@ -397,6 +412,8 @@ def optimize_whr(
     dataset: GameDataset,
     w2_bounds: Tuple[float, float] = (10, 1000),
     maxiter: int = 20,
+    max_test_days: Optional[int] = None,
+    train_ratio: float = 0.7,
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -406,6 +423,8 @@ def optimize_whr(
         dataset: Game dataset
         w2_bounds: Bounds for Wiener variance (skill drift)
         maxiter: Maximum optimization iterations
+        max_test_days: Limit test period to this many days (for faster optimization)
+        train_ratio: Fraction of days for initial training
         verbose: Whether to print progress
 
     Returns:
@@ -416,7 +435,9 @@ def optimize_whr(
     optimizer = RatingSystemOptimizer(
         WHR,
         dataset,
-        fixed_params={"max_iterations": 20},  # Limit iterations for speed
+        train_ratio=train_ratio,
+        fixed_params={"max_iterations": 20, "update_max_iterations": 3},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
@@ -434,6 +455,8 @@ def optimize_ttt(
     beta_bounds: Tuple[float, float] = (0.1, 1.5),
     gamma_bounds: Tuple[float, float] = (0.001, 0.1),
     maxiter: int = 20,
+    max_test_days: Optional[int] = None,
+    train_ratio: float = 0.7,
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -445,6 +468,8 @@ def optimize_ttt(
         beta_bounds: Bounds for performance variability
         gamma_bounds: Bounds for skill drift rate
         maxiter: Maximum optimization iterations
+        max_test_days: Limit test period to this many days (for faster optimization)
+        train_ratio: Fraction of days for initial training
         verbose: Whether to print progress
 
     Returns:
@@ -455,7 +480,13 @@ def optimize_ttt(
     optimizer = RatingSystemOptimizer(
         TrueSkillThroughTime,
         dataset,
-        fixed_params={"max_iterations": 15},  # Limit for speed
+        train_ratio=train_ratio,
+        fixed_params={
+            "max_iterations": 15,
+            "refit_max_iterations": 2,
+            "refit_interval": 1,  # Refit daily for accurate evaluation
+        },
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
