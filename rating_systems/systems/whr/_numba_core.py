@@ -148,6 +148,16 @@ def update_single_player(
             # Hessian diagonal contribution: -p_win * (1 - p_win)
             hess_diag[i] -= p_win * (1.0 - p_win)
 
+        # Virtual game prior on first day (anchors ratings toward 0)
+        # Reference implementation adds virtual win+loss vs gamma=1 player
+        # This is equivalent to a game with score=0.5 vs a r=0 opponent
+        if i == 0:
+            p_virtual = sigmoid(r_i - 0.0)  # vs r=0 opponent
+            # Add both a win (score=1) and loss (score=0) -> average to 0.5
+            gradient[i] += (1.0 - p_virtual)  # virtual win
+            gradient[i] += (0.0 - p_virtual)  # virtual loss (p_virtual is our win prob)
+            hess_diag[i] -= 2.0 * p_virtual * (1.0 - p_virtual)
+
         # Wiener process prior contributions
         if i > 0:
             # Connection to previous day
@@ -163,8 +173,12 @@ def update_single_player(
             gradient[i] -= (r_i - r_next) * inv_sigma2
             hess_diag[i] -= inv_sigma2
 
-    # Regularization for numerical stability
+    # Regularization: add small prior toward zero to prevent divergence
+    # This matches the reference implementation's -0.001 term
+    # Acts as a weak Gaussian prior centered at 0
     for i in range(n):
+        hess_diag[i] -= 0.001
+        # Additional safety check
         if hess_diag[i] > -1e-10:
             hess_diag[i] = -1e-10
 
@@ -306,11 +320,19 @@ def compute_uncertainties(
                 p_win = sigmoid(r_i - opp_r)
                 hess -= p_win * (1.0 - p_win)
 
+            # Virtual game prior on first day
+            if i == 0:
+                p_virtual = sigmoid(r_i - 0.0)
+                hess -= 2.0 * p_virtual * (1.0 - p_virtual)
+
             # Prior contributions
             if i > 0:
                 hess -= 1.0 / sigma2[i - 1]
             if i < n - 1:
                 hess -= 1.0 / sigma2[i]
+
+            # Regularization term
+            hess -= 0.001
 
             # Compute uncertainty from inverse Hessian
             if hess < -1e-10:
