@@ -40,6 +40,7 @@ class TTTConfig:
     gamma: float = 0.03  # Skill dynamics per time unit - reference default
     max_iterations: int = 30  # Max forward-backward iterations
     convergence_threshold: float = 1e-6  # Convergence threshold
+    refit_interval: int = 0  # Days between refits (0 = no periodic refit)
 
 
 class TrueSkillThroughTime(RatingSystem):
@@ -85,6 +86,7 @@ class TrueSkillThroughTime(RatingSystem):
         gamma: float = 0.03,
         max_iterations: int = 30,
         convergence_threshold: float = 1e-6,
+        refit_interval: int = 0,
         num_players: Optional[int] = None,
     ):
         self.config = TTTConfig(
@@ -94,6 +96,7 @@ class TrueSkillThroughTime(RatingSystem):
             gamma=gamma,
             max_iterations=max_iterations,
             convergence_threshold=convergence_threshold,
+            refit_interval=refit_interval,
         )
 
         # Data arrays
@@ -122,6 +125,13 @@ class TrueSkillThroughTime(RatingSystem):
         self._num_games_fitted = 0
         self._num_iterations = 0
         self._player_names: Optional[Dict[int, str]] = None
+
+        # Accumulated data for periodic refitting
+        self._accum_p1: List[np.ndarray] = []
+        self._accum_p2: List[np.ndarray] = []
+        self._accum_scores: List[np.ndarray] = []
+        self._accum_days: List[np.ndarray] = []
+        self._last_refit_day: Optional[int] = None
 
         super().__init__(num_players=num_players)
 
@@ -319,6 +329,14 @@ class TrueSkillThroughTime(RatingSystem):
         self._fitted = True
         self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
 
+        # Store data for potential refitting
+        if self.config.refit_interval > 0:
+            self._accum_p1 = [player1.copy()]
+            self._accum_p2 = [player2.copy()]
+            self._accum_scores = [scores.copy()]
+            self._accum_days = [days.copy()]
+            self._last_refit_day = self._current_day
+
         return self
 
     def predict_proba(
@@ -397,21 +415,142 @@ class TrueSkillThroughTime(RatingSystem):
         """
         Incrementally update ratings with a new batch of games.
 
-        For TTT (a batch system), this is a no-op. TTT uses static ratings
-        from the initial fit. To incorporate new games, call fit() again
-        with all historical data including new games.
+        For TTT (a batch system), this accumulates data and refits periodically
+        based on refit_interval. If refit_interval=0, this is a no-op.
 
         Args:
-            batch: New games (ignored)
+            batch: New games to incorporate
 
         Returns:
             self (for method chaining)
         """
         if not self._fitted:
             raise ValueError("Model must be fitted before updating. Call fit() first.")
-        # TTT is a batch algorithm - skip incremental updates
-        # Predictions will use static ratings from initial fit
+
+        # If no periodic refit configured, skip
+        if self.config.refit_interval <= 0:
+            return self
+
+        # Accumulate new data
+        n_games = len(batch)
+        days_array = np.full(n_games, batch.day, dtype=np.int32)
+        self._accum_p1.append(batch.player1.copy())
+        self._accum_p2.append(batch.player2.copy())
+        self._accum_scores.append(batch.scores.copy())
+        self._accum_days.append(days_array)
+
+        # Check if it's time to refit
+        if self._last_refit_day is None:
+            self._last_refit_day = batch.day
+
+        if batch.day - self._last_refit_day >= self.config.refit_interval:
+            self._refit_from_accumulated()
+            self._last_refit_day = batch.day
+
+        self._current_day = batch.day
         return self
+
+    def _refit_from_accumulated(self) -> None:
+        """Refit the model on all accumulated data."""
+        if not self._accum_p1:
+            return
+
+        # Concatenate all accumulated data
+        player1 = np.concatenate(self._accum_p1)
+        player2 = np.concatenate(self._accum_p2)
+        scores = np.concatenate(self._accum_scores)
+        days = np.concatenate(self._accum_days)
+
+        # Expand player capacity if needed
+        max_player = max(player1.max(), player2.max())
+        if self._num_players is None or max_player >= self._num_players:
+            self._num_players = int(max_player) + 1
+            self._ratings = self._initialize_ratings(self._num_players)
+
+        # Build data structures
+        self._build_batch_structure(player1, player2, scores, days)
+
+        # Initial forward pass
+        initial_forward_pass(
+            self._num_batches,
+            self._batch_offsets,
+            self._batch_times,
+            self._game_p1,
+            self._game_p2,
+            self._game_scores,
+            self._num_players,
+            self._state_forward_mu,
+            self._state_forward_sigma,
+            self._state_backward_mu,
+            self._state_backward_sigma,
+            self._state_likelihood_mu,
+            self._state_likelihood_sigma,
+            self._agent_message_mu,
+            self._agent_message_sigma,
+            self._agent_last_time,
+            self.config.mu,
+            self.config.sigma,
+            self.config.beta,
+            self.config.gamma,
+        )
+
+        # Run convergence
+        self._num_iterations = run_convergence(
+            self._num_batches,
+            self._batch_offsets,
+            self._batch_times,
+            self._game_p1,
+            self._game_p2,
+            self._game_scores,
+            self._num_players,
+            self._state_forward_mu,
+            self._state_forward_sigma,
+            self._state_backward_mu,
+            self._state_backward_sigma,
+            self._state_likelihood_mu,
+            self._state_likelihood_sigma,
+            self._agent_message_mu,
+            self._agent_message_sigma,
+            self.config.mu,
+            self.config.sigma,
+            self.config.beta,
+            self.config.gamma,
+            self.config.max_iterations,
+            self.config.convergence_threshold,
+        )
+
+        # Extract final ratings
+        ratings = np.empty(self._num_players, dtype=np.float64)
+        rd = np.empty(self._num_players, dtype=np.float64)
+
+        extract_final_ratings(
+            self._num_batches,
+            self._batch_offsets,
+            self._game_p1,
+            self._game_p2,
+            self._num_players,
+            self._state_forward_mu,
+            self._state_forward_sigma,
+            self._state_backward_mu,
+            self._state_backward_sigma,
+            self._state_likelihood_mu,
+            self._state_likelihood_sigma,
+            self._player_last_batch,
+            ratings,
+            rd,
+            self.config.mu,
+            self.config.sigma,
+            self.DISPLAY_SCALE,
+            self.DISPLAY_OFFSET,
+        )
+
+        self._ratings = PlayerRatings(
+            ratings=ratings,
+            rd=rd,
+            metadata={"system": "ttt", "config": self.config},
+        )
+
+        self._num_games_fitted = len(player1)
 
     def reset(self) -> "TrueSkillThroughTime":
         """Reset the rating system."""
@@ -433,6 +572,12 @@ class TrueSkillThroughTime(RatingSystem):
         self._player_last_batch = None
         self._num_games_fitted = 0
         self._num_iterations = 0
+        # Clear accumulated data
+        self._accum_p1 = []
+        self._accum_p2 = []
+        self._accum_scores = []
+        self._accum_days = []
+        self._last_refit_day = None
         return super().reset()
 
     def __repr__(self) -> str:
