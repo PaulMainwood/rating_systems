@@ -29,6 +29,7 @@ class OptimizationResult:
     n_evaluations: int
     total_time: float
     history: List[Dict[str, Any]]
+    fixed_params: Dict[str, Any] = None  # Parameters that were held fixed during optimization
 
     def summary(self) -> str:
         """Return a summary string."""
@@ -275,6 +276,7 @@ class RatingSystemOptimizer:
             n_evaluations=self._eval_count,
             total_time=total_time,
             history=self._history,
+            fixed_params=self.fixed_params,
         )
 
         if verbose:
@@ -436,7 +438,7 @@ def optimize_whr(
         WHR,
         dataset,
         train_ratio=train_ratio,
-        fixed_params={"max_iterations": 20, "update_max_iterations": 3},
+        fixed_params={"max_iterations": 50, "update_max_iterations": 20},
         max_test_days=max_test_days,
     )
 
