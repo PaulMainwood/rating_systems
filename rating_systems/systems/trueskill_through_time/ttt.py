@@ -38,7 +38,8 @@ class TTTConfig:
     sigma: float = 6.0  # Prior skill std dev (internal scale) - reference default
     beta: float = 1.0  # Performance std dev (within-game noise) - reference default
     gamma: float = 0.03  # Skill dynamics per time unit - reference default
-    max_iterations: int = 30  # Max forward-backward iterations
+    max_iterations: int = 30  # Max forward-backward iterations for initial fit
+    refit_max_iterations: int = 2  # Max iterations for periodic refits (faster)
     convergence_threshold: float = 1e-6  # Convergence threshold
     refit_interval: int = 0  # Days between refits (0 = no periodic refit)
 
@@ -85,6 +86,7 @@ class TrueSkillThroughTime(RatingSystem):
         beta: float = 1.0,
         gamma: float = 0.03,
         max_iterations: int = 30,
+        refit_max_iterations: int = 2,
         convergence_threshold: float = 1e-6,
         refit_interval: int = 0,
         num_players: Optional[int] = None,
@@ -95,6 +97,7 @@ class TrueSkillThroughTime(RatingSystem):
             beta=beta,
             gamma=gamma,
             max_iterations=max_iterations,
+            refit_max_iterations=refit_max_iterations,
             convergence_threshold=convergence_threshold,
             refit_interval=refit_interval,
         )
@@ -494,7 +497,7 @@ class TrueSkillThroughTime(RatingSystem):
             self.config.gamma,
         )
 
-        # Run convergence
+        # Run convergence (use fewer iterations for periodic refits)
         self._num_iterations = run_convergence(
             self._num_batches,
             self._batch_offsets,
@@ -515,7 +518,7 @@ class TrueSkillThroughTime(RatingSystem):
             self.config.sigma,
             self.config.beta,
             self.config.gamma,
-            self.config.max_iterations,
+            self.config.refit_max_iterations,
             self.config.convergence_threshold,
         )
 
