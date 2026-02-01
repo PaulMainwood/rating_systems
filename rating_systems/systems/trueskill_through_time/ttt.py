@@ -384,12 +384,34 @@ class TrueSkillThroughTime(RatingSystem):
         )
 
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
-        """Update ratings with a new batch - for TTT this requires refitting."""
-        # TTT is a batch algorithm - incremental updates would require refitting
-        # For now, just raise an error
-        raise NotImplementedError(
-            "TTT is a batch algorithm. Use fit() to retrain on all data."
-        )
+        """Update ratings with a new batch - for TTT this is a no-op.
+
+        TTT is a batch algorithm that requires full refit for updates.
+        In backtest mode, we skip updates and use static ratings from training.
+        """
+        # TTT is a batch algorithm - skip incremental updates
+        # This means backtest predictions use static ratings from initial fit
+        pass
+
+    def update(self, batch: GameBatch) -> "TrueSkillThroughTime":
+        """
+        Incrementally update ratings with a new batch of games.
+
+        For TTT (a batch system), this is a no-op. TTT uses static ratings
+        from the initial fit. To incorporate new games, call fit() again
+        with all historical data including new games.
+
+        Args:
+            batch: New games (ignored)
+
+        Returns:
+            self (for method chaining)
+        """
+        if not self._fitted:
+            raise ValueError("Model must be fitted before updating. Call fit() first.")
+        # TTT is a batch algorithm - skip incremental updates
+        # Predictions will use static ratings from initial fit
+        return self
 
     def reset(self) -> "TrueSkillThroughTime":
         """Reset the rating system."""
