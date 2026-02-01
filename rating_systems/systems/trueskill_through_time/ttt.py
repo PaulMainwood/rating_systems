@@ -40,8 +40,13 @@ class TTTConfig:
     sigma: float = 1.5  # Prior skill std dev (internal scale)
     beta: float = 0.5  # Performance std dev (within-game noise)
     gamma: float = 0.01  # Skill dynamics per time unit
-    max_iterations: int = 30  # Max forward-backward iterations
+    max_iterations: int = 30  # Max forward-backward iterations for initial fit
+    update_max_iterations: int = None  # Max iterations for incremental updates (default: same as max_iterations)
     convergence_threshold: float = 1e-4  # Convergence threshold
+
+    def __post_init__(self):
+        if self.update_max_iterations is None:
+            self.update_max_iterations = self.max_iterations
 
 
 class TrueSkillThroughTime(RatingSystem):
@@ -89,6 +94,7 @@ class TrueSkillThroughTime(RatingSystem):
         beta: float = 0.5,
         gamma: float = 0.01,
         max_iterations: int = 30,
+        update_max_iterations: Optional[int] = None,
         convergence_threshold: float = 1e-4,
         num_players: Optional[int] = None,
     ):
@@ -98,6 +104,7 @@ class TrueSkillThroughTime(RatingSystem):
             beta=beta,
             gamma=gamma,
             max_iterations=max_iterations,
+            update_max_iterations=update_max_iterations,
             convergence_threshold=convergence_threshold,
         )
 
@@ -238,10 +245,17 @@ class TrueSkillThroughTime(RatingSystem):
             self._pd_game_score[pos2] = 1.0 - score
             pd_game_pos[pd2] += 1
 
-    def _run_optimization(self) -> None:
-        """Run forward-backward belief propagation."""
+    def _run_optimization(self, max_iterations: Optional[int] = None) -> None:
+        """Run forward-backward belief propagation.
+
+        Args:
+            max_iterations: Override max iterations (uses config value if None)
+        """
         if self._player_offsets is None or self._num_players is None:
             return
+
+        if max_iterations is None:
+            max_iterations = self.config.max_iterations
 
         self._num_iterations = run_all_iterations(
             self._num_players,
@@ -260,7 +274,7 @@ class TrueSkillThroughTime(RatingSystem):
             self.config.sigma,
             self.config.beta,
             self.config.gamma,
-            self.config.max_iterations,
+            max_iterations,
             self.config.convergence_threshold,
         )
 
@@ -313,10 +327,17 @@ class TrueSkillThroughTime(RatingSystem):
 
         self._refit()
 
-    def _refit(self) -> None:
-        """Refit on all stored data."""
+    def _refit(self, max_iterations: Optional[int] = None) -> None:
+        """Refit on all stored data.
+
+        Args:
+            max_iterations: Override max iterations (uses update_max_iterations if None)
+        """
         if self._stored_player1 is None:
             return
+
+        if max_iterations is None:
+            max_iterations = self.config.update_max_iterations
 
         self._build_data_structures(
             self._stored_player1,
@@ -325,7 +346,7 @@ class TrueSkillThroughTime(RatingSystem):
             self._stored_days,
             self._num_players,
         )
-        self._run_optimization()
+        self._run_optimization(max_iterations)
         self._extract_current_ratings()
         self._num_games_fitted = len(self._stored_player1)
 

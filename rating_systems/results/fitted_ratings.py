@@ -1168,3 +1168,424 @@ class FittedTTTRatings:
             f"  Mean RD: {self.rd.mean():.1f}",
         ]
         return "\n".join(lines)
+
+
+@dataclass
+class FittedTrueSkillRatings:
+    """
+    Queryable fitted TrueSkill ratings.
+
+    TrueSkill uses Gaussian skill beliefs N(mu, sigma^2) for each player.
+    This class provides both internal scale values (mu, sigma) and
+    display-scale values for Elo-like readability.
+
+    Conservative rating (mu - k*sigma) represents a lower bound on skill
+    and is useful for ranking when you want high confidence.
+
+    Attributes:
+        mu: Array of skill means (internal scale)
+        sigma: Array of skill uncertainties (internal scale)
+        beta: Performance variability parameter
+        display_scale: Scale factor for Elo-like display
+        display_offset: Offset for Elo-like display
+    """
+
+    mu: np.ndarray  # Internal scale skill means
+    sigma: np.ndarray  # Internal scale uncertainties
+    beta: float = 4.166666667
+    initial_mu: float = 25.0
+    initial_sigma: float = 8.333333333
+    display_scale: float = 133.333333  # 400/3
+    display_offset: float = 1500.0
+    num_games_fitted: int = 0
+    last_day: int = -1
+    player_names: Optional[Dict[int, str]] = None
+
+    # Cached
+    _ranks: Optional[np.ndarray] = field(default=None, repr=False)
+    _conservative_ranks: Optional[np.ndarray] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        """Ensure arrays are contiguous."""
+        self.mu = np.ascontiguousarray(self.mu, dtype=np.float64)
+        self.sigma = np.ascontiguousarray(self.sigma, dtype=np.float64)
+        self._ranks = None
+        self._conservative_ranks = None
+
+    @property
+    def num_players(self) -> int:
+        return len(self.mu)
+
+    @property
+    def ratings(self) -> np.ndarray:
+        """Display-scale ratings (mu * scale + offset)."""
+        return self.mu * self.display_scale + self.display_offset
+
+    @property
+    def rd(self) -> np.ndarray:
+        """Display-scale uncertainties (sigma * scale)."""
+        return self.sigma * self.display_scale
+
+    @property
+    def ranks(self) -> np.ndarray:
+        """Lazily computed ranks by mu (1 = highest)."""
+        if self._ranks is None:
+            self._ranks = _compute_ranks(self.mu)
+        return self._ranks
+
+    def conservative_rating(self, k: float = 3.0) -> np.ndarray:
+        """
+        Compute conservative ratings: mu - k*sigma (internal scale).
+
+        Args:
+            k: Number of standard deviations (default 3 for ~99.7% confidence)
+        """
+        return self.mu - k * self.sigma
+
+    def conservative_display_rating(self, k: float = 3.0) -> np.ndarray:
+        """Compute conservative ratings in display scale."""
+        return self.conservative_rating(k) * self.display_scale + self.display_offset
+
+    def get_rating(self, player_id: int) -> Tuple[float, float]:
+        """Get (mu, sigma) for a player in internal scale."""
+        return float(self.mu[player_id]), float(self.sigma[player_id])
+
+    def get_display_rating(self, player_id: int) -> Tuple[float, float]:
+        """Get (rating, rd) for a player in display scale."""
+        return (
+            float(self.mu[player_id] * self.display_scale + self.display_offset),
+            float(self.sigma[player_id] * self.display_scale),
+        )
+
+    def get_name(self, player_id: int) -> str:
+        if self.player_names and player_id in self.player_names:
+            return self.player_names[player_id]
+        return f"Player_{player_id}"
+
+    def predict(self, player1: int, player2: int) -> float:
+        """
+        Predict probability that player1 beats player2.
+
+        P(p1 wins) = Phi((mu1 - mu2) / sqrt(2*beta^2 + sigma1^2 + sigma2^2))
+        """
+        import math
+
+        mu1, sigma1 = self.mu[player1], self.sigma[player1]
+        mu2, sigma2 = self.mu[player2], self.sigma[player2]
+
+        c = math.sqrt(2.0 * self.beta ** 2 + sigma1 ** 2 + sigma2 ** 2)
+        t = (mu1 - mu2) / c
+
+        # Standard normal CDF
+        return 0.5 * (1.0 + math.erf(t / math.sqrt(2.0)))
+
+    def predict_batch(
+        self,
+        player1: Union[List[int], np.ndarray],
+        player2: Union[List[int], np.ndarray],
+    ) -> np.ndarray:
+        """Predict outcomes for multiple matchups."""
+        from scipy.special import erf
+
+        p1 = np.asarray(player1)
+        p2 = np.asarray(player2)
+
+        mu1, sigma1 = self.mu[p1], self.sigma[p1]
+        mu2, sigma2 = self.mu[p2], self.sigma[p2]
+
+        c = np.sqrt(2.0 * self.beta ** 2 + sigma1 ** 2 + sigma2 ** 2)
+        t = (mu1 - mu2) / c
+
+        return 0.5 * (1.0 + erf(t / np.sqrt(2.0)))
+
+    def top(self, n: int = 10) -> pl.DataFrame:
+        """Get top N rated players by mu."""
+        indices = get_top_n_indices(self.mu, n)
+        return self._indices_to_dataframe(indices)
+
+    def conservative_top(self, n: int = 10, k: float = 3.0) -> pl.DataFrame:
+        """
+        Get top N players by conservative rating (mu - k*sigma).
+
+        More appropriate for ranking when confidence matters.
+        """
+        conservative = self.conservative_rating(k)
+        indices = get_top_n_indices(conservative, n)
+        return self._indices_to_dataframe(indices, include_conservative=True, k=k)
+
+    def bottom(self, n: int = 10) -> pl.DataFrame:
+        """Get bottom N rated players."""
+        indices = get_bottom_n_indices(self.mu, n)
+        return self._indices_to_dataframe(indices)
+
+    def rank(self, player_id: int) -> int:
+        """Get rank of a specific player by mu (1 = highest)."""
+        return int(self.ranks[player_id])
+
+    def _indices_to_dataframe(
+        self,
+        indices: np.ndarray,
+        include_conservative: bool = False,
+        k: float = 3.0,
+    ) -> pl.DataFrame:
+        data = {
+            "rank": self.ranks[indices],
+            "player_id": indices,
+            "name": _get_names_vectorized(indices, self.player_names),
+            "rating": self.ratings[indices],  # Display scale
+            "rd": self.rd[indices],  # Display scale
+            "mu": self.mu[indices],  # Internal scale
+            "sigma": self.sigma[indices],  # Internal scale
+        }
+        if include_conservative:
+            data["conservative"] = self.conservative_display_rating(k)[indices]
+        return pl.DataFrame(data)
+
+    def matchup(self, player1: int, player2: int) -> pl.DataFrame:
+        """Get detailed matchup analysis between two players."""
+        r1, rd1 = self.get_display_rating(player1)
+        r2, rd2 = self.get_display_rating(player2)
+        mu1, sigma1 = self.get_rating(player1)
+        mu2, sigma2 = self.get_rating(player2)
+        p1_wins = self.predict(player1, player2)
+
+        return pl.DataFrame({
+            "player_id": [player1, player2],
+            "name": [self.get_name(player1), self.get_name(player2)],
+            "rating": [r1, r2],
+            "rd": [rd1, rd2],
+            "mu": [mu1, mu2],
+            "sigma": [sigma1, sigma2],
+            "win_prob": [p1_wins, 1.0 - p1_wins],
+        })
+
+    def confident_players(self, max_sigma: float = 2.0, n: int = 10) -> pl.DataFrame:
+        """
+        Get top players with low uncertainty (well-established ratings).
+
+        Args:
+            max_sigma: Maximum sigma in internal scale (default 2.0)
+            n: Number of players to return
+        """
+        mask = self.sigma <= max_sigma
+        filtered_mu = np.where(mask, self.mu, -np.inf)
+        indices = get_top_n_indices(filtered_mu, n)
+        indices = indices[mask[indices]]
+        return self._indices_to_dataframe(indices)
+
+    def to_dataframe(self, include_rank: bool = True) -> pl.DataFrame:
+        """Export all ratings to DataFrame."""
+        player_ids = np.arange(self.num_players)
+
+        data = {
+            "player_id": player_ids,
+            "rating": self.ratings,  # Display scale
+            "rd": self.rd,  # Display scale
+            "mu": self.mu,
+            "sigma": self.sigma,
+        }
+
+        if include_rank:
+            data["rank"] = self.ranks
+
+        if self.player_names:
+            data["name"] = _get_names_vectorized(player_ids, self.player_names)
+
+        return pl.DataFrame(data).sort("rating", descending=True)
+
+    def save(self, path: str, include_rank: bool = False) -> None:
+        """Save fitted ratings to parquet."""
+        self.to_dataframe(include_rank=include_rank).write_parquet(path)
+
+    def __repr__(self) -> str:
+        return (
+            f"FittedTrueSkillRatings(players={self.num_players}, "
+            f"games={self.num_games_fitted}, beta={self.beta:.3f})"
+        )
+
+    def __str__(self) -> str:
+        lines = [
+            f"Fitted TrueSkill Ratings",
+            f"  Players: {self.num_players:,}",
+            f"  Games fitted: {self.num_games_fitted:,}",
+            f"  Beta: {self.beta:.4f}",
+            f"  Rating range: {self.ratings.min():.1f} - {self.ratings.max():.1f}",
+            f"  Mean mu: {self.mu.mean():.2f}",
+            f"  Mean sigma: {self.sigma.mean():.2f}",
+        ]
+        return "\n".join(lines)
+
+
+@dataclass
+class FittedYukselRatings:
+    """
+    Queryable fitted Yuksel ratings.
+
+    The Yuksel method tracks uncertainty (phi) via running variance.
+    phi = sqrt(V/W) represents the standard deviation of the rating history.
+
+    Attributes:
+        ratings: Array of player ratings (Elo scale)
+        phi: Array of uncertainty values (standard deviation of rating)
+        delta_r_max: Maximum rating change per game
+        alpha: Uncertainty decay factor
+        scaling_factor: Update scaling factor
+        initial_rating: Initial rating value
+    """
+
+    ratings: np.ndarray
+    phi: np.ndarray  # Uncertainty (sqrt(V/W))
+    delta_r_max: float = 350.0
+    alpha: float = 2.0
+    scaling_factor: float = 0.9
+    initial_rating: float = 1500.0
+    num_games_fitted: int = 0
+    last_day: int = -1
+    player_names: Optional[Dict[int, str]] = None
+
+    # Cached
+    _ranks: Optional[np.ndarray] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        """Ensure arrays are contiguous."""
+        self.ratings = np.ascontiguousarray(self.ratings, dtype=np.float64)
+        self.phi = np.ascontiguousarray(self.phi, dtype=np.float64)
+        self._ranks = None
+
+    @property
+    def num_players(self) -> int:
+        return len(self.ratings)
+
+    @property
+    def ranks(self) -> np.ndarray:
+        """Lazily computed ranks array (1 = highest rated)."""
+        if self._ranks is None:
+            self._ranks = _compute_ranks(self.ratings)
+        return self._ranks
+
+    def get_rating(self, player_id: int) -> Tuple[float, float]:
+        """Get (rating, phi) for a single player."""
+        return float(self.ratings[player_id]), float(self.phi[player_id])
+
+    def get_name(self, player_id: int) -> str:
+        if self.player_names and player_id in self.player_names:
+            return self.player_names[player_id]
+        return f"Player_{player_id}"
+
+    def predict(self, player1: int, player2: int) -> float:
+        """
+        Predict probability that player1 beats player2.
+
+        Uses Elo-style prediction: P = 1 / (1 + 10^((r2-r1)/400))
+        """
+        import math
+        Q = math.log(10) / 400.0
+        diff = Q * (self.ratings[player1] - self.ratings[player2])
+        if diff > 20:
+            return 1.0 - 1e-9
+        elif diff < -20:
+            return 1e-9
+        return 1.0 / (1.0 + math.exp(-diff))
+
+    def predict_batch(
+        self,
+        player1: Union[List[int], np.ndarray],
+        player2: Union[List[int], np.ndarray],
+    ) -> np.ndarray:
+        """Predict outcomes for multiple matchups."""
+        Q = np.log(10) / 400.0
+        p1 = np.asarray(player1)
+        p2 = np.asarray(player2)
+        diff = Q * (self.ratings[p1] - self.ratings[p2])
+        return 1.0 / (1.0 + np.exp(-np.clip(diff, -20, 20)))
+
+    def top(self, n: int = 10) -> pl.DataFrame:
+        """Get top N rated players with uncertainty."""
+        indices = get_top_n_indices(self.ratings, n)
+        return self._indices_to_dataframe(indices)
+
+    def bottom(self, n: int = 10) -> pl.DataFrame:
+        """Get bottom N rated players."""
+        indices = get_bottom_n_indices(self.ratings, n)
+        return self._indices_to_dataframe(indices)
+
+    def rank(self, player_id: int) -> int:
+        """Get rank of a specific player (1 = highest rated)."""
+        return int(self.ranks[player_id])
+
+    def _indices_to_dataframe(self, indices: np.ndarray) -> pl.DataFrame:
+        return pl.DataFrame({
+            "rank": self.ranks[indices],
+            "player_id": indices,
+            "name": _get_names_vectorized(indices, self.player_names),
+            "rating": self.ratings[indices],
+            "phi": self.phi[indices],
+        })
+
+    def matchup(self, player1: int, player2: int) -> pl.DataFrame:
+        """Get detailed matchup analysis between two players."""
+        r1, phi1 = self.get_rating(player1)
+        r2, phi2 = self.get_rating(player2)
+        p1_wins = self.predict(player1, player2)
+
+        return pl.DataFrame({
+            "player_id": [player1, player2],
+            "name": [self.get_name(player1), self.get_name(player2)],
+            "rating": [r1, r2],
+            "phi": [phi1, phi2],
+            "win_prob": [p1_wins, 1.0 - p1_wins],
+        })
+
+    def confident_players(self, max_phi: float = 100.0, n: int = 10) -> pl.DataFrame:
+        """
+        Get top players with low uncertainty (well-established ratings).
+
+        Args:
+            max_phi: Maximum uncertainty (default 100.0)
+            n: Number of players to return
+        """
+        mask = self.phi <= max_phi
+        filtered_ratings = np.where(mask, self.ratings, -np.inf)
+        indices = get_top_n_indices(filtered_ratings, n)
+        indices = indices[mask[indices]]
+        return self._indices_to_dataframe(indices)
+
+    def to_dataframe(self, include_rank: bool = True) -> pl.DataFrame:
+        """Export all ratings to DataFrame."""
+        player_ids = np.arange(self.num_players)
+
+        data = {
+            "player_id": player_ids,
+            "rating": self.ratings,
+            "phi": self.phi,
+        }
+
+        if include_rank:
+            data["rank"] = self.ranks
+
+        if self.player_names:
+            data["name"] = _get_names_vectorized(player_ids, self.player_names)
+
+        return pl.DataFrame(data).sort("rating", descending=True)
+
+    def save(self, path: str, include_rank: bool = False) -> None:
+        """Save fitted ratings to parquet."""
+        self.to_dataframe(include_rank=include_rank).write_parquet(path)
+
+    def __repr__(self) -> str:
+        return (
+            f"FittedYukselRatings(players={self.num_players}, "
+            f"games={self.num_games_fitted}, delta_r_max={self.delta_r_max})"
+        )
+
+    def __str__(self) -> str:
+        lines = [
+            f"Fitted Yuksel Ratings",
+            f"  Players: {self.num_players:,}",
+            f"  Games fitted: {self.num_games_fitted:,}",
+            f"  Delta R Max: {self.delta_r_max}",
+            f"  Alpha: {self.alpha}",
+            f"  Rating range: {self.ratings.min():.1f} - {self.ratings.max():.1f}",
+            f"  Mean phi: {self.phi.mean():.1f}",
+        ]
+        return "\n".join(lines)

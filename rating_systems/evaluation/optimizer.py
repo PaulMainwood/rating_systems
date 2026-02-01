@@ -469,6 +469,88 @@ def optimize_ttt(
     )
 
 
+def optimize_trueskill(
+    dataset: GameDataset,
+    initial_mu_bounds: Tuple[float, float] = (20, 30),
+    initial_sigma_bounds: Tuple[float, float] = (5, 12),
+    beta_bounds: Tuple[float, float] = (2, 8),
+    maxiter: int = 30,
+    verbose: bool = True,
+) -> OptimizationResult:
+    """
+    Optimize TrueSkill parameters.
+
+    Args:
+        dataset: Game dataset
+        initial_mu_bounds: Bounds for initial skill mean
+        initial_sigma_bounds: Bounds for initial skill uncertainty
+        beta_bounds: Bounds for performance variability
+        maxiter: Maximum optimization iterations
+        verbose: Whether to print progress
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.trueskill import TrueSkill
+
+    optimizer = RatingSystemOptimizer(
+        TrueSkill,
+        dataset,
+        fixed_params={},
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "initial_mu": initial_mu_bounds,
+            "initial_sigma": initial_sigma_bounds,
+            "beta": beta_bounds,
+        },
+        maxiter=maxiter,
+        verbose=verbose,
+    )
+
+
+def optimize_yuksel(
+    dataset: GameDataset,
+    delta_r_max_bounds: Tuple[float, float] = (50, 500),
+    alpha_bounds: Tuple[float, float] = (0.5, 5.0),
+    scaling_factor_bounds: Tuple[float, float] = (0.5, 1.0),
+    maxiter: int = 30,
+    verbose: bool = True,
+) -> OptimizationResult:
+    """
+    Optimize Yuksel parameters.
+
+    Args:
+        dataset: Game dataset
+        delta_r_max_bounds: Bounds for max rating change per game
+        alpha_bounds: Bounds for uncertainty decay factor
+        scaling_factor_bounds: Bounds for update scaling factor
+        maxiter: Maximum optimization iterations
+        verbose: Whether to print progress
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.yuksel import Yuksel
+
+    optimizer = RatingSystemOptimizer(
+        Yuksel,
+        dataset,
+        fixed_params={"initial_rating": 1500.0},
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "delta_r_max": delta_r_max_bounds,
+            "alpha": alpha_bounds,
+            "scaling_factor": scaling_factor_bounds,
+        },
+        maxiter=maxiter,
+        verbose=verbose,
+    )
+
+
 def optimize_all(
     dataset: GameDataset,
     systems: Optional[List[str]] = None,
@@ -481,7 +563,7 @@ def optimize_all(
     Args:
         dataset: Game dataset
         systems: List of systems to optimize. Options:
-            ["elo", "glicko", "glicko2", "whr", "ttt"]
+            ["elo", "glicko", "glicko2", "trueskill", "whr", "ttt"]
             If None, optimizes all.
         maxiter: Maximum optimization iterations per system
         verbose: Whether to print progress
@@ -490,7 +572,7 @@ def optimize_all(
         Dict mapping system name to OptimizationResult
     """
     if systems is None:
-        systems = ["elo", "glicko", "glicko2", "whr", "ttt"]
+        systems = ["elo", "glicko", "glicko2", "trueskill", "yuksel", "whr", "ttt"]
 
     results = {}
 
@@ -498,6 +580,8 @@ def optimize_all(
         "elo": optimize_elo,
         "glicko": optimize_glicko,
         "glicko2": optimize_glicko2,
+        "trueskill": optimize_trueskill,
+        "yuksel": optimize_yuksel,
         "whr": optimize_whr,
         "ttt": optimize_ttt,
     }

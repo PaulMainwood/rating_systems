@@ -1,5 +1,5 @@
 """
-Rating Systems - High-performance implementations of Elo, Glicko, and Glicko-2.
+Rating Systems - High-performance implementations of Elo, Glicko, Glicko-2, and TrueSkill.
 
 This package provides modular, Numba-accelerated implementations of popular
 rating systems with support for backtesting and evaluation.
@@ -8,7 +8,7 @@ Default implementations use Numba for high performance on CPU. PyTorch-based
 implementations are available for GPU acceleration on very large datasets.
 
 Quick Start:
-    from rating_systems import GameDataset, Elo, Glicko, Glicko2, Backtester
+    from rating_systems import GameDataset, Elo, Glicko, Glicko2, TrueSkill, Backtester
 
     # Load data
     dataset = GameDataset.from_parquet("games.parquet")
@@ -22,6 +22,12 @@ Quick Start:
     print(fitted.top(10))  # Top 10 players
     print(fitted.predict(0, 1))  # P(player 0 beats player 1)
 
+    # TrueSkill with uncertainty tracking
+    ts = TrueSkill()
+    ts.fit(dataset)
+    fitted_ts = ts.get_fitted_ratings()
+    print(fitted_ts.conservative_top(10))  # Top 10 by mu - 3*sigma
+
     # Backtest
     backtester = Backtester(elo, dataset)
     results = backtester.run()
@@ -31,8 +37,10 @@ Command-line interface:
     python -m rating_systems predict data.parquet 0 1
     python -m rating_systems backtest data.parquet
 
-For GPU acceleration (requires PyTorch):
-    from rating_systems import EloTorch, GlickoTorch, Glicko2Torch
+For GPU acceleration (requires PyTorch, import explicitly):
+    from rating_systems.systems.elo.elo_torch import EloTorch
+    from rating_systems.systems.glicko.glicko_torch import GlickoTorch
+    from rating_systems.systems.glicko2.glicko2_torch import Glicko2Torch
 
     elo_gpu = EloTorch(k_factor=32)  # Uses CUDA if available
     elo_gpu.fit(dataset)
@@ -48,15 +56,15 @@ from .systems import (
     GlickoConfig,
     Glicko2,
     Glicko2Config,
-    # PyTorch implementations
-    EloTorch,
-    GlickoTorch,
-    Glicko2Torch,
+    TrueSkill,
+    TrueSkillConfig,
+    Yuksel,
+    YukselConfig,
     # Batch systems
     WHR,
     TrueSkillThroughTime,
 )
-from .results import FittedEloRatings, FittedGlickoRatings
+from .results import FittedEloRatings, FittedGlickoRatings, FittedTrueSkillRatings, FittedYukselRatings
 from .evaluation import (
     Backtester,
     BacktestResult,
@@ -89,13 +97,15 @@ __all__ = [
     "GlickoConfig",
     "Glicko2",
     "Glicko2Config",
+    "TrueSkill",
+    "TrueSkillConfig",
+    "Yuksel",
+    "YukselConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",
-    # PyTorch systems
-    "EloTorch",
-    "GlickoTorch",
-    "Glicko2Torch",
+    "FittedTrueSkillRatings",
+    "FittedYukselRatings",
     # Batch systems
     "WHR",
     "TrueSkillThroughTime",
