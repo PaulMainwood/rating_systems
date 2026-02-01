@@ -176,7 +176,18 @@ class Backtester:
             self.system.update(batch)
 
             if verbose and (i + 1) % 10 == 0:
-                print(f"  Processed day {i + 1}/{len(test_days)}")
+                # Calculate running metrics
+                running_preds = np.concatenate(all_predictions)
+                running_acts = np.concatenate(all_actuals)
+                running_brier = brier_score(running_preds, running_acts)
+                running_ll = log_loss(running_preds, running_acts)
+                running_games = len(running_preds)
+                print(
+                    f"  Day {i + 1}/{len(test_days)} | "
+                    f"Games: {running_games:,} | "
+                    f"Brier: {running_brier:.4f} | "
+                    f"LogLoss: {running_ll:.4f}"
+                )
 
         # Calculate aggregate metrics
         all_preds = np.concatenate(all_predictions)
