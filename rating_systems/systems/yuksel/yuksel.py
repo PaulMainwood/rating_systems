@@ -193,7 +193,7 @@ class Yuksel(RatingSystem):
             Single probability or array of probabilities
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -279,7 +279,7 @@ class Yuksel(RatingSystem):
             Single phi value or array of phi values
         """
         if self._W is None or self._V is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         phi = compute_phi(self._V, self._W)
 
@@ -295,7 +295,7 @@ class Yuksel(RatingSystem):
             FittedYukselRatings with methods for querying results
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Compute phi (uncertainty) from V and W
         phi = compute_phi(self._V, self._W)
@@ -315,7 +315,7 @@ class Yuksel(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players (convenience method)."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def reset(self) -> "Yuksel":

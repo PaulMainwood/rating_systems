@@ -125,7 +125,7 @@ class Glicko(RatingSystem):
         Uses combined RD of both players in the calculation.
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -204,7 +204,7 @@ class Glicko(RatingSystem):
             FittedGlickoRatings with methods for querying results
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         return FittedGlickoRatings(
             ratings=self._ratings.ratings.copy(),
@@ -221,13 +221,13 @@ class Glicko(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def get_rating(self, player_id: int) -> Tuple[float, float]:
         """Get (rating, rd) for a player."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return (
             float(self._ratings.ratings[player_id]),
             float(self._ratings.rd[player_id]),

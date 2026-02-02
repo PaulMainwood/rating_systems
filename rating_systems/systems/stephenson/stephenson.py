@@ -41,8 +41,8 @@ from ._numba_core import (
 class StephensonConfig:
     """Configuration for Stephenson rating system."""
 
-    initial_rating: float = 2200.0  # Starting rating
-    initial_rd: float = 300.0       # Starting rating deviation
+    initial_rating: float = 1500.0  # Starting rating (use 2200 for chess conventions)
+    initial_rd: float = 350.0       # Starting rating deviation
     min_rd: float = 30.0            # Minimum RD
     max_rd: float = 350.0           # Maximum RD
     cval: float = 10.0              # RD increase per period of inactivity
@@ -69,8 +69,8 @@ class Stephenson(RatingSystem):
     Elo by ~6.8% on chess data (per the original Kaggle competition).
 
     Parameters:
-        initial_rating: Starting rating for new players (default: 2200)
-        initial_rd: Starting rating deviation (default: 300)
+        initial_rating: Starting rating for new players (default: 1500)
+        initial_rd: Starting rating deviation (default: 350)
         min_rd: Minimum rating deviation (default: 30)
         max_rd: Maximum rating deviation (default: 350)
         cval: RD increase per period of inactivity (default: 10)
@@ -95,8 +95,8 @@ class Stephenson(RatingSystem):
 
     def __init__(
         self,
-        initial_rating: float = 2200.0,
-        initial_rd: float = 300.0,
+        initial_rating: float = 1500.0,
+        initial_rd: float = 350.0,
         min_rd: float = 30.0,
         max_rd: float = 350.0,
         cval: float = 10.0,
@@ -164,7 +164,7 @@ class Stephenson(RatingSystem):
         Uses Stephenson expected score formula with opponent's RD.
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -248,7 +248,7 @@ class Stephenson(RatingSystem):
         for querying results.
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         return FittedGlickoRatings(
             ratings=self._ratings.ratings.copy(),
@@ -265,13 +265,13 @@ class Stephenson(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def get_rating(self, player_id: int) -> Tuple[float, float]:
         """Get (rating, rd) for a player."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return (
             float(self._ratings.ratings[player_id]),
             float(self._ratings.rd[player_id]),
@@ -286,8 +286,7 @@ class Stephenson(RatingSystem):
         status = "fitted" if self._fitted else "not fitted"
         players = self._num_players or "?"
         return (
-            f"Stephenson(initial_rating={self.config.initial_rating}, "
-            f"initial_rd={self.config.initial_rd}, cval={self.config.cval}, "
-            f"hval={self.config.hval}, lambda={self.config.lambda_param}, "
+            f"Stephenson(hval={self.config.hval}, "
+            f"lambda_param={self.config.lambda_param}, "
             f"players={players}, {status})"
         )

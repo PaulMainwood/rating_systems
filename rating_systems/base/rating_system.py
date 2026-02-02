@@ -33,7 +33,7 @@ class RatingSystem(ABC):
     - reset(): Reset to initial state
     - get_ratings(): Get current player ratings
 
-    Uses numpy arrays for broad compatibility with Numba and PyTorch backends.
+    Uses numpy arrays for broad compatibility with Numba-accelerated backends.
     """
 
     system_type: RatingSystemType = RatingSystemType.ONLINE

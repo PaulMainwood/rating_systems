@@ -4,9 +4,8 @@ High-performance implementations of popular rating systems using Numba JIT compi
 
 ## Features
 
-- **Fast by Default**: Numba-accelerated implementations (3-15x faster than pure Python)
-- **Multiple Rating Systems**: Elo, Glicko, Glicko-2, Whole History Rating (WHR), TrueSkill Through Time
-- **Optional GPU Support**: PyTorch-based variants available for GPU acceleration on very large datasets
+- **Fast**: Numba-accelerated implementations (3-15x faster than pure Python)
+- **Multiple Systems**: Elo, Glicko, Glicko-2, Stephenson, TrueSkill, Yuksel, WHR, TrueSkill Through Time
 - **Unified Interface**: All systems share `fit()`, `predict_proba()`, `update()` methods
 - **Backtesting**: Walk-forward validation with Brier score, log loss, and accuracy metrics
 - **Time-varying Ratings**: WHR and TTT track skill evolution over time
@@ -14,13 +13,10 @@ High-performance implementations of popular rating systems using Numba JIT compi
 ## Installation
 
 ```bash
-# Core installation (Numba-based, no GPU)
+# Core installation
 pip install -e .
 
-# With PyTorch support for GPU acceleration
-pip install -e ".[torch]"
-
-# Development installation
+# Development installation (includes pytest, black, etc.)
 pip install -e ".[dev]"
 ```
 
@@ -32,7 +28,7 @@ from rating_systems import GameDataset, Elo, Glicko2, Backtester
 # Load data (parquet with columns: Player1, Player2, Score, Day)
 dataset = GameDataset.from_parquet("games.parquet")
 
-# Create and fit a rating system (uses fast Numba backend)
+# Create and fit a rating system
 elo = Elo(k_factor=32)
 elo.fit(dataset)
 
@@ -53,33 +49,26 @@ print(f"Brier Score: {results.brier:.4f}")
 
 ### Online Systems (Incremental Updates)
 
-| System | Description | Key Parameters | Backend |
-|--------|-------------|----------------|---------|
-| **Elo** | Classic rating system | `k_factor` (default: 32) | Numba |
-| **Glicko** | Adds rating deviation (RD) | `initial_rd`, `c` | Numba |
-| **Glicko2** | Adds volatility parameter | `tau`, `initial_volatility` | Numba |
-| **EloTorch** | Elo with GPU support | Same as Elo | PyTorch |
-| **GlickoTorch** | Glicko with GPU support | Same as Glicko | PyTorch |
-| **Glicko2Torch** | Glicko-2 with GPU support | Same as Glicko2 | PyTorch |
-
-### Batch Systems (Full Refit)
+These systems can update ratings incrementally as new games arrive.
 
 | System | Description | Key Parameters |
 |--------|-------------|----------------|
-| **WHR** | Whole History Rating - Bayesian with time-varying skill | `w2` (drift variance) |
-| **TrueSkillThroughTime** | Gaussian belief propagation | `sigma`, `beta`, `gamma` |
+| **Elo** | Classic rating system | `k_factor` (32), `initial_rating` (1500) |
+| **Glicko** | Adds rating deviation (RD) | `initial_rd` (350), `c` (34.6) |
+| **Glicko2** | Adds volatility parameter | `tau` (0.5), `initial_volatility` (0.06) |
+| **Stephenson** | Extended Glicko with neighbourhood parameter | `hval` (10), `lambda_param` (2) |
+| **TrueSkill** | Bayesian skill estimation | `initial_sigma` (8.33), `beta` (4.17) |
+| **Yuksel** | Adaptive with uncertainty tracking | `delta_r_max` (32), `alpha` (0.1) |
 
-## Performance
+### Batch Systems (Full History Refit)
 
-Numba implementations provide significant speedups over PyTorch for sequential game processing:
+These systems must refit on all historical data when new games arrive.
 
-| System | Numba | PyTorch | Speedup |
-|--------|-------|---------|---------|
-| Elo | 0.66s | 2.52s | 3.8x |
-| Glicko | 1.38s | 21.9s | 15.8x |
-| Glicko-2 | 1.59s | 15.3s | 9.6x |
-
-*Benchmark: 50,000 games, 1,000 players, 500 days on CPU*
+| System | Description | Key Parameters |
+|--------|-------------|----------------|
+| **WHR** | Whole History Rating - Bayesian with time-varying skill | `w2` (300), `max_iterations` (50) |
+| **TrueSkillThroughTime** | Gaussian belief propagation | `sigma` (6), `beta` (1), `gamma` (0.03) |
+| **SurfaceTTT** | Surface-specific TTT (e.g., for tennis) | `base_weight` (0.6), `surface_sigma` (3) |
 
 ## Data Format
 
@@ -103,26 +92,11 @@ systems = [
     Elo(k_factor=16),
     Elo(k_factor=32),
     Glicko2(),
+    Stephenson(),
 ]
 
 comparison = compare_systems(systems, dataset, train_end_day=100)
 print(comparison)
-```
-
-## Using PyTorch Backends
-
-For GPU acceleration on very large datasets:
-
-```python
-from rating_systems import EloTorch, GlickoTorch, Glicko2Torch
-import torch
-
-# Uses CUDA if available, otherwise MPS (Apple Silicon) or CPU
-elo_gpu = EloTorch(k_factor=32)
-elo_gpu.fit(dataset)
-
-# Explicitly set device
-elo_cuda = EloTorch(k_factor=32, device=torch.device("cuda"))
 ```
 
 ## Project Structure
@@ -132,13 +106,16 @@ rating_systems/
 ├── data/           # GameDataset, GameBatch
 ├── base/           # RatingSystem base class, PlayerRatings
 ├── systems/
-│   ├── elo/        # Elo (Numba) + EloTorch
-│   ├── glicko/     # Glicko (Numba) + GlickoTorch
-│   ├── glicko2/    # Glicko2 (Numba) + Glicko2Torch
+│   ├── elo/        # Elo
+│   ├── glicko/     # Glicko
+│   ├── glicko2/    # Glicko-2
+│   ├── stephenson/ # Stephenson
+│   ├── trueskill/  # TrueSkill
+│   ├── yuksel/     # Yuksel
 │   ├── whr/        # Whole History Rating
-│   └── trueskill_through_time/
+│   └── trueskill_through_time/  # TTT and SurfaceTTT
 ├── evaluation/     # Backtester, metrics
-└── utils/          # Device detection utilities
+└── results/        # FittedRatings classes
 ```
 
 ## License

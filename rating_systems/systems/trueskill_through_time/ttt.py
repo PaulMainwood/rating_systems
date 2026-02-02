@@ -358,7 +358,7 @@ class TrueSkillThroughTime(RatingSystem):
             Single probability or array of probabilities
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -387,7 +387,7 @@ class TrueSkillThroughTime(RatingSystem):
     def get_fitted_ratings(self) -> FittedTTTRatings:
         """Get a queryable fitted ratings object."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         return FittedTTTRatings(
             ratings=self._ratings.ratings.copy(),

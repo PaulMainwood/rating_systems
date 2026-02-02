@@ -115,7 +115,7 @@ class Elo(RatingSystem):
             Single probability or array of probabilities
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -191,7 +191,7 @@ class Elo(RatingSystem):
             FittedEloRatings with methods for querying results
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         return FittedEloRatings(
             ratings=self._ratings.ratings.copy(),
@@ -206,7 +206,7 @@ class Elo(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players (convenience method)."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def reset(self) -> "Elo":
@@ -218,6 +218,7 @@ class Elo(RatingSystem):
         status = "fitted" if self._fitted else "not fitted"
         players = self._num_players or "?"
         return (
-            f"Elo(k={self.config.k_factor}, initial={self.config.initial_rating}, "
+            f"Elo(k_factor={self.config.k_factor}, "
+            f"initial_rating={self.config.initial_rating}, "
             f"players={players}, {status})"
         )

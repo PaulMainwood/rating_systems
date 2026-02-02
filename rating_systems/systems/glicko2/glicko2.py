@@ -208,7 +208,7 @@ class Glicko2(RatingSystem):
             Single probability or array of probabilities
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -235,7 +235,7 @@ class Glicko2(RatingSystem):
             FittedGlicko2Ratings with methods for querying results
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         return FittedGlicko2Ratings(
             ratings=self._to_glicko_scale(self._ratings.ratings),
@@ -269,7 +269,7 @@ class Glicko2(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players (convenience method)."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def reset(self) -> "Glicko2":

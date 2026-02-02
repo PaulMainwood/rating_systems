@@ -43,6 +43,7 @@ class WHRConfig:
 
     w2: float = 300.0  # Wiener variance per time unit (Elo² per day)
     initial_rating: float = 1500.0  # Initial Elo-scale rating
+    initial_rd: float = 350.0  # Initial rating deviation (uncertainty)
     max_iterations: int = 50  # Maximum Newton-Raphson iterations for initial fit
     refit_max_iterations: int = None  # Max iterations for refits (default: same as max_iterations)
     refit_interval: int = 1  # Days between refits during walk-forward (1 = every day)
@@ -92,21 +93,17 @@ class WHR(RatingSystem):
         self,
         w2: float = 300.0,
         initial_rating: float = 1500.0,
+        initial_rd: float = 350.0,
         max_iterations: int = 50,
         refit_max_iterations: Optional[int] = None,
         refit_interval: int = 1,
         convergence_threshold: float = 1e-6,
         num_players: Optional[int] = None,
-        # Legacy parameter name support
-        update_max_iterations: Optional[int] = None,
     ):
-        # Support legacy parameter name
-        if update_max_iterations is not None and refit_max_iterations is None:
-            refit_max_iterations = update_max_iterations
-
         self.config = WHRConfig(
             w2=w2,
             initial_rating=initial_rating,
+            initial_rd=initial_rd,
             max_iterations=max_iterations,
             refit_max_iterations=refit_max_iterations,
             refit_interval=refit_interval,
@@ -143,7 +140,7 @@ class WHR(RatingSystem):
         """Create initial WHR ratings."""
         return PlayerRatings(
             ratings=np.full(num_players, self.config.initial_rating, dtype=np.float64),
-            rd=np.full(num_players, 350.0, dtype=np.float64),
+            rd=np.full(num_players, self.config.initial_rd, dtype=np.float64),
             metadata={"system": "whr", "config": self.config},
         )
 
@@ -192,7 +189,7 @@ class WHR(RatingSystem):
 
         # Initialize ratings to 0 (log-gamma scale, equals initial_rating in Elo)
         self._pd_r = np.zeros(total_pd, dtype=np.float64)
-        self._pd_uncertainty = np.full(total_pd, 350.0, dtype=np.float64)
+        self._pd_uncertainty = np.full(total_pd, self.config.initial_rd, dtype=np.float64)
 
         # Step 3: Count games per player-day using scatter-add
         pd_game_counts = np.zeros(total_pd, dtype=np.int64)
@@ -417,7 +414,7 @@ class WHR(RatingSystem):
             Single probability or array of probabilities
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(
@@ -441,7 +438,7 @@ class WHR(RatingSystem):
             FittedWHRRatings with methods for querying results
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Build rating history per player
         rating_history = {}
@@ -493,7 +490,7 @@ class WHR(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players (convenience method)."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def reset(self) -> "WHR":
@@ -519,6 +516,6 @@ class WHR(RatingSystem):
         players = self._num_players or "?"
         return (
             f"WHR(w2={self.config.w2}, "
-            f"max_iter={self.config.max_iterations}, "
+            f"max_iterations={self.config.max_iterations}, "
             f"players={players}, {status})"
         )

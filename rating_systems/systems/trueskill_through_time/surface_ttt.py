@@ -503,7 +503,7 @@ class SurfaceTTT(RatingSystem):
             Single probability or array of probabilities
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)):
@@ -584,7 +584,7 @@ class SurfaceTTT(RatingSystem):
             (rating, rd) tuple in display scale
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         if surface is None:
             return (float(self._ratings.ratings[player_id]),
@@ -615,7 +615,7 @@ class SurfaceTTT(RatingSystem):
             (adjustment, rd) where adjustment is in display scale points
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         surf = map_surface(surface)
         surf_id = self._surface_player_id(player_id, surf)
@@ -627,7 +627,7 @@ class SurfaceTTT(RatingSystem):
     def get_fitted_ratings(self) -> "FittedSurfaceTTTRatings":
         """Get a queryable fitted ratings object."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         return FittedSurfaceTTTRatings(
             ratings=self._ratings.ratings.copy(),

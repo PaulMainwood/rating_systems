@@ -160,7 +160,7 @@ class TrueSkill(RatingSystem):
         P(p1 wins) = Phi((mu1 - mu2) / sqrt(2*beta^2 + sigma1^2 + sigma2^2))
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -243,7 +243,7 @@ class TrueSkill(RatingSystem):
             FittedTrueSkillRatings with methods for querying results
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
 
         # Import here to avoid circular import
         from ...results.fitted_ratings import FittedTrueSkillRatings
@@ -264,7 +264,7 @@ class TrueSkill(RatingSystem):
     def top(self, n: int = 10) -> np.ndarray:
         """Get indices of top N rated players (by mu)."""
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
     def conservative_top(self, n: int = 10, k: float = 3.0) -> np.ndarray:
@@ -279,7 +279,7 @@ class TrueSkill(RatingSystem):
             Array of player indices sorted by conservative rating
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         conservative = compute_conservative_rating(
             self._ratings.ratings,
             self._ratings.rd,
@@ -294,7 +294,7 @@ class TrueSkill(RatingSystem):
         For display-scale values, use get_display_rating().
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         return (
             float(self._ratings.ratings[player_id]),
             float(self._ratings.rd[player_id]),
@@ -308,7 +308,7 @@ class TrueSkill(RatingSystem):
         rd = sigma * display_scale
         """
         if self._ratings is None:
-            raise ValueError("Model not fitted")
+            raise ValueError("Model not fitted. Call fit() first.")
         mu = self._ratings.ratings[player_id]
         sigma = self._ratings.rd[player_id]
         return (
