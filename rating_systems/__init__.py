@@ -8,6 +8,7 @@ Available systems:
 - Elo: Classic Elo rating system
 - Glicko: Glicko rating system with rating deviation
 - Glicko2: Glicko-2 rating system with volatility
+- Stephenson: Extended Glicko with neighbourhood and bonus parameters
 - TrueSkill: Bayesian skill estimation with Gaussian beliefs
 - Yuksel: Adaptive rating system with uncertainty tracking
 - WHR: Whole History Rating (batch)
@@ -54,6 +55,8 @@ from .systems import (
     GlickoConfig,
     Glicko2,
     Glicko2Config,
+    Stephenson,
+    StephensonConfig,
     TrueSkill,
     TrueSkillConfig,
     Yuksel,
@@ -99,6 +102,8 @@ __all__ = [
     "GlickoConfig",
     "Glicko2",
     "Glicko2Config",
+    "Stephenson",
+    "StephensonConfig",
     "TrueSkill",
     "TrueSkillConfig",
     "Yuksel",

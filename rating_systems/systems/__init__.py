@@ -4,6 +4,7 @@ Online systems (incremental updates):
 - Elo: Classic Elo rating system
 - Glicko: Glicko rating system with rating deviation
 - Glicko2: Glicko-2 rating system with volatility
+- Stephenson: Extended Glicko with neighbourhood and bonus parameters
 - TrueSkill: Bayesian skill estimation with Gaussian beliefs
 - Yuksel: Adaptive rating system with uncertainty tracking
 
@@ -19,6 +20,7 @@ All implementations use Numba for high performance.
 from .elo import Elo, EloConfig
 from .glicko import Glicko, GlickoConfig
 from .glicko2 import Glicko2, Glicko2Config
+from .stephenson import Stephenson, StephensonConfig
 from .trueskill import TrueSkill, TrueSkillConfig
 from .yuksel import Yuksel, YukselConfig
 
@@ -41,6 +43,8 @@ __all__ = [
     "GlickoConfig",
     "Glicko2",
     "Glicko2Config",
+    "Stephenson",
+    "StephensonConfig",
     "TrueSkill",
     "TrueSkillConfig",
     "Yuksel",

@@ -2,18 +2,17 @@
 
 import numpy as np
 import pandas as pd
-import torch
 
 from rating_systems import (
     GameDataset,
     Elo,
     Glicko,
     Glicko2,
+    Stephenson,
     WHR,
     TrueSkillThroughTime,
     Backtester,
     compare_systems,
-    get_device,
 )
 
 
@@ -63,10 +62,9 @@ def test_basic_functionality():
     dataset = GameDataset.from_dataframe(df)
 
     print(f"Dataset: {dataset}")
-    print(f"Device: {get_device()}")
 
     # Test online systems
-    for SystemClass in [Elo, Glicko, Glicko2]:
+    for SystemClass in [Elo, Glicko, Glicko2, Stephenson]:
         print(f"\nTesting {SystemClass.__name__}...")
 
         system = SystemClass()
@@ -229,6 +227,7 @@ def test_system_comparison():
         Elo(k_factor=32),
         Glicko(),
         Glicko2(tau=0.5),
+        Stephenson(),
         WHR(w2=300.0, max_iterations=30),
         # TrueSkillThroughTime excluded - O(n²) per iteration is slow
     ]
@@ -275,7 +274,7 @@ def test_dataset_operations():
 
 
 if __name__ == "__main__":
-    torch.manual_seed(42)
+    np.random.seed(42)
 
     test_basic_functionality()
     test_whr()
