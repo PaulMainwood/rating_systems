@@ -248,12 +248,21 @@ class RatingSystemOptimizer:
             # Start from middle of bounds
             x0 = np.array([(b[0] + b[1]) / 2 for b in bounds])
 
+            # For L-BFGS-B, use larger finite-difference step size
+            # Default eps (~1e-8) is too small for noisy Brier score objectives
+            options = {"maxiter": maxiter, "disp": False}
+            if method == "L-BFGS-B":
+                # Scale eps based on parameter ranges
+                # Use ~2% of parameter range for gradient estimation
+                eps_values = np.array([(b[1] - b[0]) * 0.02 for b in bounds])
+                options["eps"] = eps_values
+
             result = minimize(
                 self._objective,
                 x0,
                 method=method,
                 bounds=bounds if method in ["L-BFGS-B", "SLSQP"] else None,
-                options={"maxiter": maxiter, "disp": False},
+                options=options,
                 **kwargs,
             )
             best_x = result.x
