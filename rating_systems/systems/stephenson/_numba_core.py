@@ -21,6 +21,21 @@ from numba import njit, prange
 # Constants
 Q = math.log(10) / 400.0  # ~0.00575646273
 Q_SQUARED = Q ** 2
+THREE_Q_SQUARED_OVER_PI_SQUARED = 3.0 * Q_SQUARED / (math.pi ** 2)
+
+
+@njit(cache=True, fastmath=True, inline="always")
+def _g_rd(rd: float) -> float:
+    """
+    Glicko g(RD) function that compresses rating deviation.
+
+    g(RD) = 1 / sqrt(1 + 3*q^2*RD^2 / pi^2)
+
+    This gives values between 0 and 1:
+    - RD=0: g(RD) = 1 (certain rating)
+    - RD=350: g(RD) ≈ 0.67 (uncertain rating)
+    """
+    return 1.0 / math.sqrt(1.0 + THREE_Q_SQUARED_OVER_PI_SQUARED * rd * rd)
 
 
 @njit(cache=True, fastmath=True, inline="always")
@@ -33,10 +48,11 @@ def _expected_score_steph(
     """
     Stephenson expected score calculation.
 
-    Unlike Glicko where g(RD) scales the rating difference,
-    Stephenson uses the opponent's RD directly:
+    Uses the Glicko g(RD) function to weight the rating difference:
 
-    E = 1 / (1 + 10^(RD_opp * (R_opp - R_player - gamma) / 400))
+    E = 1 / (1 + 10^(g(RD_opp) * (R_opp - R_player - gamma) / 400))
+
+    where g(RD) = 1/sqrt(1 + 3*q^2*RD^2/pi^2)
 
     Args:
         player_rating: Player's rating
@@ -47,7 +63,8 @@ def _expected_score_steph(
     Returns:
         Expected score (probability of winning)
     """
-    exponent = opp_rd * (opp_rating - player_rating - gamma) / 400.0
+    g = _g_rd(opp_rd)
+    exponent = g * (opp_rating - player_rating - gamma) / 400.0
     return 1.0 / (1.0 + math.pow(10.0, exponent))
 
 
@@ -91,8 +108,8 @@ def process_player_games_steph(
 
     Returns: (dscore, dval, l1t, n_games)
     where:
-        dscore = sum of RD_opp * (actual_score + bval - expected_score)
-        dval = sum of q² * RD_opp² * E * (1-E)
+        dscore = sum of g(RD_opp) * (actual_score + bval - expected_score)
+        dval = sum of q² * g(RD_opp)² * E * (1-E)
         l1t = sum of (R_opp - R_player) rating differences
         n_games = number of games played
     """
@@ -121,16 +138,17 @@ def process_player_games_steph(
         if opp >= 0:
             opp_rating = pre_ratings[opp]
             opp_rd = pre_rd[opp]
+            g_opp = _g_rd(opp_rd)
 
-            # Expected score (Stephenson formula)
+            # Expected score (Stephenson formula with g(RD))
             e = _expected_score_steph(player_rating, opp_rating, opp_rd, player_gamma)
 
             # Actual score with bonus
             actual = score + bval
 
-            # Accumulate sums
-            dscore += opp_rd * (actual - e)
-            dval += Q_SQUARED * opp_rd * opp_rd * e * (1.0 - e)
+            # Accumulate sums using g(RD) not raw RD
+            dscore += g_opp * (actual - e)
+            dval += Q_SQUARED * g_opp * g_opp * e * (1.0 - e)
             l1t += opp_rating - player_rating
             n_games += 1
 
@@ -151,10 +169,12 @@ def compute_player_update_steph(
     max_rd: float,
 ) -> tuple:
     """
-    Compute new rating and RD for a player using Stephenson formulas.
+    Compute new rating and RD for a player using Stephenson/Glicko formulas.
 
-    New RD: 1 / (1/(old_RD + n_games * h²) + dval)
-    New rating: old_R + new_RD * q * dscore + (lambda/100) * l1t / n_games
+    The formulas follow standard Glicko with Stephenson extensions:
+    - dval = q² * Σ(g(RD_opp)² * E * (1-E))  [inverse of d²]
+    - new_RD² = 1 / (1/RD² + dval)
+    - Δrating = q * new_RD² * dscore + (lambda/100) * l1t / n_games
 
     Returns: (new_rating, new_rd)
     """
@@ -162,18 +182,23 @@ def compute_player_update_steph(
         return player_rating, player_rd
 
     # Update RD with hval term (additional uncertainty per game)
-    rd_with_h = player_rd + n_games * hval * hval
+    # In Stephenson, hval adds to RD before computing new RD
+    rd_with_h = math.sqrt(player_rd * player_rd + n_games * hval * hval)
 
-    # New RD (inverse sum formula)
+    # New RD using Glicko formula: new_RD² = 1/(1/RD² + 1/d²)
+    # where dval = 1/d² = q² * Σ(g² * E * (1-E))
+    rd_squared = rd_with_h * rd_with_h
     if dval > 1e-10:
-        new_rd = 1.0 / (1.0 / rd_with_h + dval)
+        new_rd_squared = 1.0 / (1.0 / rd_squared + dval)
     else:
-        new_rd = rd_with_h
+        new_rd_squared = rd_squared
 
+    new_rd = math.sqrt(new_rd_squared)
     new_rd = min(max(new_rd, min_rd), max_rd)
 
-    # New rating with neighbourhood term
-    rating_change = new_rd * Q * dscore
+    # New rating using Glicko formula: Δr = q * new_RD² * Σ(g * (S - E))
+    # Plus Stephenson's neighbourhood term
+    rating_change = Q * new_rd_squared * dscore
     neighbourhood_term = (lambda_param / 100.0) * l1t / n_games
     new_rating = player_rating + rating_change + neighbourhood_term
 
@@ -421,32 +446,36 @@ def fit_all_days(
                 if opp >= 0:
                     opp_rating = pre_ratings[opp]
                     opp_rd = pre_rd[opp]
+                    g_opp = _g_rd(opp_rd)
 
-                    # Expected score (Stephenson formula)
+                    # Expected score (Stephenson formula with g(RD))
                     e = _expected_score_steph(player_rating, opp_rating, opp_rd, player_gamma)
 
                     # Actual score with bonus
                     actual = score + bval
 
-                    # Accumulate sums
-                    dscore += opp_rd * (actual - e)
-                    dval += Q_SQUARED * opp_rd * opp_rd * e * (1.0 - e)
+                    # Accumulate sums using g(RD) not raw RD
+                    dscore += g_opp * (actual - e)
+                    dval += Q_SQUARED * g_opp * g_opp * e * (1.0 - e)
                     l1t += opp_rating - player_rating
                     games_found += 1
 
             if games_found > 0:
-                # Update RD with hval term
-                rd_with_h = pre_rd[player] + games_found * hval * hval
+                # Update RD with hval term (adds uncertainty per game)
+                player_rd = pre_rd[player]
+                rd_with_h = math.sqrt(player_rd * player_rd + games_found * hval * hval)
 
-                # New RD
+                # New RD using Glicko formula: new_RD² = 1/(1/RD² + dval)
+                rd_squared = rd_with_h * rd_with_h
                 if dval > 1e-10:
-                    new_rd = 1.0 / (1.0 / rd_with_h + dval)
+                    new_rd_squared = 1.0 / (1.0 / rd_squared + dval)
                 else:
-                    new_rd = rd_with_h
+                    new_rd_squared = rd_squared
+                new_rd = math.sqrt(new_rd_squared)
                 new_rd = min(max(new_rd, min_rd), max_rd)
 
-                # New rating with neighbourhood term
-                rating_change = new_rd * Q * dscore
+                # New rating: q * new_RD² * dscore + neighbourhood term
+                rating_change = Q * new_rd_squared * dscore
                 neighbourhood_term = (lambda_param / 100.0) * l1t / games_found
                 new_rating = player_rating + rating_change + neighbourhood_term
 
