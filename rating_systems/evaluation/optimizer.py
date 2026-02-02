@@ -291,6 +291,7 @@ def optimize_elo(
     scale_bounds: Tuple[float, float] = (200, 600),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -302,6 +303,7 @@ def optimize_elo(
         scale_bounds: Bounds for scale (logistic parameter)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -320,6 +322,7 @@ def optimize_elo(
             "k_factor": k_bounds,
             "scale": scale_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
@@ -332,6 +335,7 @@ def optimize_glicko(
     c_bounds: Tuple[float, float] = (20, 100),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -344,6 +348,7 @@ def optimize_glicko(
         c_bounds: Bounds for c parameter (RD increase per period)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -362,6 +367,7 @@ def optimize_glicko(
             "initial_rd": initial_rd_bounds,
             "c": c_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
@@ -374,6 +380,7 @@ def optimize_glicko2(
     tau_bounds: Tuple[float, float] = (0.3, 1.2),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -386,6 +393,7 @@ def optimize_glicko2(
         tau_bounds: Bounds for tau (system constant)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -405,6 +413,7 @@ def optimize_glicko2(
             "initial_volatility": initial_volatility_bounds,
             "tau": tau_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
@@ -416,6 +425,7 @@ def optimize_whr(
     maxiter: int = 20,
     max_test_days: Optional[int] = None,
     train_ratio: float = 0.7,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -427,6 +437,7 @@ def optimize_whr(
         maxiter: Maximum optimization iterations
         max_test_days: Limit test period to this many days (for faster optimization)
         train_ratio: Fraction of days for initial training
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -446,6 +457,7 @@ def optimize_whr(
         param_bounds={
             "w2": w2_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
@@ -459,6 +471,7 @@ def optimize_ttt(
     maxiter: int = 20,
     max_test_days: Optional[int] = None,
     train_ratio: float = 0.7,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -472,6 +485,7 @@ def optimize_ttt(
         maxiter: Maximum optimization iterations
         max_test_days: Limit test period to this many days (for faster optimization)
         train_ratio: Fraction of days for initial training
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -497,6 +511,7 @@ def optimize_ttt(
             "beta": beta_bounds,
             "gamma": gamma_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
@@ -508,6 +523,7 @@ def optimize_trueskill(
     initial_sigma_bounds: Tuple[float, float] = (5, 12),
     beta_bounds: Tuple[float, float] = (2, 8),
     maxiter: int = 30,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -519,6 +535,7 @@ def optimize_trueskill(
         initial_sigma_bounds: Bounds for initial skill uncertainty
         beta_bounds: Bounds for performance variability
         maxiter: Maximum optimization iterations
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -538,6 +555,7 @@ def optimize_trueskill(
             "initial_sigma": initial_sigma_bounds,
             "beta": beta_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
@@ -549,6 +567,7 @@ def optimize_yuksel(
     alpha_bounds: Tuple[float, float] = (0.5, 5.0),
     scaling_factor_bounds: Tuple[float, float] = (0.5, 1.0),
     maxiter: int = 30,
+    method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
     """
@@ -560,6 +579,7 @@ def optimize_yuksel(
         alpha_bounds: Bounds for uncertainty decay factor
         scaling_factor_bounds: Bounds for update scaling factor
         maxiter: Maximum optimization iterations
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
     Returns:
@@ -579,6 +599,7 @@ def optimize_yuksel(
             "alpha": alpha_bounds,
             "scaling_factor": scaling_factor_bounds,
         },
+        method=method,
         maxiter=maxiter,
         verbose=verbose,
     )
