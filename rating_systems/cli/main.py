@@ -32,7 +32,7 @@ def load_player_names(path: Optional[str]) -> Optional[dict]:
 def cmd_fit(args):
     """Fit a rating system and optionally save results."""
     from ..data import GameDataset
-    from ..systems import Elo, Glicko, Glicko2
+    from ..systems import Elo, Glicko, Glicko2, Stephenson
 
     dataset = GameDataset.from_parquet(args.data)
     player_names = load_player_names(args.players)
@@ -44,6 +44,7 @@ def cmd_fit(args):
         "elo": lambda: Elo(k_factor=args.k_factor),
         "glicko": lambda: Glicko(),
         "glicko2": lambda: Glicko2(),
+        "stephenson": lambda: Stephenson(),
     }
 
     if args.system not in systems:
@@ -73,7 +74,7 @@ def cmd_fit(args):
 def cmd_top(args):
     """Show top N players."""
     from ..data import GameDataset
-    from ..systems import Elo, Glicko, Glicko2
+    from ..systems import Elo, Glicko, Glicko2, Stephenson
 
     dataset = GameDataset.from_parquet(args.data)
     player_names = load_player_names(args.players)
@@ -82,6 +83,7 @@ def cmd_top(args):
         "elo": lambda: Elo(k_factor=args.k_factor),
         "glicko": lambda: Glicko(),
         "glicko2": lambda: Glicko2(),
+        "stephenson": lambda: Stephenson(),
     }
 
     system = systems.get(args.system, lambda: Elo())()
@@ -97,7 +99,7 @@ def cmd_top(args):
 def cmd_predict(args):
     """Predict outcome between two players."""
     from ..data import GameDataset
-    from ..systems import Elo, Glicko, Glicko2
+    from ..systems import Elo, Glicko, Glicko2, Stephenson
 
     dataset = GameDataset.from_parquet(args.data)
     player_names = load_player_names(args.players)
@@ -106,6 +108,7 @@ def cmd_predict(args):
         "elo": lambda: Elo(k_factor=args.k_factor),
         "glicko": lambda: Glicko(),
         "glicko2": lambda: Glicko2(),
+        "stephenson": lambda: Stephenson(),
     }
 
     system = systems.get(args.system, lambda: Elo())()
@@ -139,7 +142,7 @@ def cmd_predict(args):
 def cmd_matchup(args):
     """Detailed matchup analysis."""
     from ..data import GameDataset
-    from ..systems import Elo, Glicko, Glicko2
+    from ..systems import Elo, Glicko, Glicko2, Stephenson
 
     dataset = GameDataset.from_parquet(args.data)
     player_names = load_player_names(args.players)
@@ -148,6 +151,7 @@ def cmd_matchup(args):
         "elo": lambda: Elo(k_factor=args.k_factor),
         "glicko": lambda: Glicko(),
         "glicko2": lambda: Glicko2(),
+        "stephenson": lambda: Stephenson(),
     }
 
     system = systems.get(args.system, lambda: Elo())()
@@ -165,7 +169,7 @@ def cmd_matchup(args):
 def cmd_backtest(args):
     """Run backtest on a dataset."""
     from ..data import GameDataset
-    from ..systems import Elo, Glicko, Glicko2
+    from ..systems import Elo, Glicko, Glicko2, Stephenson
     from ..evaluation import Backtester, compare_systems
 
     dataset = GameDataset.from_parquet(args.data)
@@ -184,6 +188,7 @@ def cmd_backtest(args):
             Elo(k_factor=32),
             Glicko(),
             Glicko2(),
+            Stephenson(),
         ]
         results = compare_systems(systems, dataset, train_end_day=train_end_day)
         print("\nResults:")
@@ -193,6 +198,7 @@ def cmd_backtest(args):
             "elo": Elo(k_factor=args.k_factor),
             "glicko": Glicko(),
             "glicko2": Glicko2(),
+            "stephenson": Stephenson(),
         }
         system = systems_map.get(args.system, Elo())
         backtester = Backtester(system, dataset)
@@ -239,7 +245,7 @@ def main():
         p.add_argument("data", help="Path to games parquet file")
         p.add_argument("--players", "-p", help="Path to player names parquet file")
         p.add_argument("--system", "-s", default="elo",
-                       choices=["elo", "glicko", "glicko2"],
+                       choices=["elo", "glicko", "glicko2", "stephenson"],
                        help="Rating system to use")
         p.add_argument("--k-factor", "-k", type=float, default=32.0,
                        help="K-factor for Elo (default: 32)")
@@ -272,7 +278,7 @@ def main():
     backtest_parser = subparsers.add_parser("backtest", help="Run backtest")
     backtest_parser.add_argument("data", help="Path to games parquet file")
     backtest_parser.add_argument("--system", "-s", default="all",
-                                 choices=["elo", "glicko", "glicko2", "all"],
+                                 choices=["elo", "glicko", "glicko2", "stephenson", "all"],
                                  help="System to backtest (default: all)")
     backtest_parser.add_argument("--train-fraction", "-f", type=float, default=0.7,
                                  help="Fraction of data for training (default: 0.7)")

@@ -428,6 +428,55 @@ def optimize_glicko2(
     )
 
 
+def optimize_stephenson(
+    dataset: GameDataset,
+    initial_rd_bounds: Tuple[float, float] = (200, 500),
+    cval_bounds: Tuple[float, float] = (5, 50),
+    hval_bounds: Tuple[float, float] = (0, 30),
+    lambda_bounds: Tuple[float, float] = (0, 10),
+    initial_rating: float = 1500.0,
+    maxiter: int = 30,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+) -> OptimizationResult:
+    """
+    Optimize Stephenson parameters.
+
+    Args:
+        dataset: Game dataset
+        initial_rd_bounds: Bounds for initial rating deviation
+        cval_bounds: Bounds for RD increase per period of inactivity
+        hval_bounds: Bounds for additional RD increase per game
+        lambda_bounds: Bounds for neighbourhood shrinkage parameter
+        initial_rating: Fixed initial rating
+        maxiter: Maximum optimization iterations
+        method: Optimization method ("differential_evolution" or "L-BFGS-B")
+        verbose: Whether to print progress
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.stephenson import Stephenson
+
+    optimizer = RatingSystemOptimizer(
+        Stephenson,
+        dataset,
+        fixed_params={"initial_rating": initial_rating},
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "initial_rd": initial_rd_bounds,
+            "cval": cval_bounds,
+            "hval": hval_bounds,
+            "lambda_param": lambda_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+    )
+
+
 def optimize_whr(
     dataset: GameDataset,
     w2_bounds: Tuple[float, float] = (10, 1000),
@@ -626,7 +675,7 @@ def optimize_all(
     Args:
         dataset: Game dataset
         systems: List of systems to optimize. Options:
-            ["elo", "glicko", "glicko2", "trueskill", "whr", "ttt"]
+            ["elo", "glicko", "glicko2", "stephenson", "trueskill", "yuksel", "whr", "ttt"]
             If None, optimizes all.
         maxiter: Maximum optimization iterations per system
         verbose: Whether to print progress
@@ -635,7 +684,7 @@ def optimize_all(
         Dict mapping system name to OptimizationResult
     """
     if systems is None:
-        systems = ["elo", "glicko", "glicko2", "trueskill", "yuksel", "whr", "ttt"]
+        systems = ["elo", "glicko", "glicko2", "stephenson", "trueskill", "yuksel", "whr", "ttt"]
 
     results = {}
 
@@ -643,6 +692,7 @@ def optimize_all(
         "elo": optimize_elo,
         "glicko": optimize_glicko,
         "glicko2": optimize_glicko2,
+        "stephenson": optimize_stephenson,
         "trueskill": optimize_trueskill,
         "yuksel": optimize_yuksel,
         "whr": optimize_whr,
