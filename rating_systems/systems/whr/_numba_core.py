@@ -486,3 +486,39 @@ def predict_proba_at_day(
         result[i] = sigmoid(r1_lg - r2_lg)
 
     return result
+
+
+@njit(cache=True)
+def fill_game_arrays(
+    n_games: int,
+    pd1_indices: np.ndarray,
+    pd2_indices: np.ndarray,
+    scores: np.ndarray,
+    pd_game_offsets: np.ndarray,
+    pd_game_opp_pd: np.ndarray,
+    pd_game_score: np.ndarray,
+) -> None:
+    """
+    Fill game arrays with opponent references and scores.
+
+    Used by the NumPy-based _build_data_structures for the final step
+    that requires tracking per-player-day positions.
+    """
+    pd_game_pos = pd_game_offsets[:-1].copy()
+
+    for i in range(n_games):
+        pd1 = pd1_indices[i]
+        pd2 = pd2_indices[i]
+        score = scores[i]
+
+        # Add game from player1's perspective
+        pos1 = pd_game_pos[pd1]
+        pd_game_opp_pd[pos1] = pd2
+        pd_game_score[pos1] = score
+        pd_game_pos[pd1] += 1
+
+        # Add game from player2's perspective
+        pos2 = pd_game_pos[pd2]
+        pd_game_opp_pd[pos2] = pd1
+        pd_game_score[pos2] = 1.0 - score
+        pd_game_pos[pd2] += 1
