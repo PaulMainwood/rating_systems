@@ -16,7 +16,7 @@ class PlayerRatings:
     different systems, regardless of whether they track just a rating
     (Elo) or additional parameters like RD and volatility (Glicko-2).
 
-    Uses numpy arrays for broad compatibility with Numba and PyTorch backends.
+    Uses numpy arrays for broad compatibility with Numba-accelerated backends.
     """
 
     ratings: np.ndarray  # (num_players,) Primary rating - float64
