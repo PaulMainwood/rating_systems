@@ -1,11 +1,17 @@
 """
-Rating Systems - High-performance implementations of Elo, Glicko, Glicko-2, and TrueSkill.
+Rating Systems - High-performance Numba-accelerated implementations of rating systems.
 
 This package provides modular, Numba-accelerated implementations of popular
 rating systems with support for backtesting and evaluation.
 
-Default implementations use Numba for high performance on CPU. PyTorch-based
-implementations are available for GPU acceleration on very large datasets.
+Available systems:
+- Elo: Classic Elo rating system
+- Glicko: Glicko rating system with rating deviation
+- Glicko2: Glicko-2 rating system with volatility
+- TrueSkill: Bayesian skill estimation with Gaussian beliefs
+- Yuksel: Adaptive rating system with uncertainty tracking
+- WHR: Whole History Rating (batch)
+- TrueSkillThroughTime: TrueSkill Through Time (batch)
 
 Quick Start:
     from rating_systems import GameDataset, Elo, Glicko, Glicko2, TrueSkill, Backtester
@@ -13,7 +19,7 @@ Quick Start:
     # Load data
     dataset = GameDataset.from_parquet("games.parquet")
 
-    # Create and fit a rating system (uses fast Numba backend)
+    # Create and fit a rating system
     elo = Elo(k_factor=32)
     elo.fit(dataset)
 
@@ -36,18 +42,10 @@ Command-line interface:
     python -m rating_systems fit data.parquet --top 20
     python -m rating_systems predict data.parquet 0 1
     python -m rating_systems backtest data.parquet
-
-For GPU acceleration (requires PyTorch, import explicitly):
-    from rating_systems.systems.elo.elo_torch import EloTorch
-    from rating_systems.systems.glicko.glicko_torch import GlickoTorch
-    from rating_systems.systems.glicko2.glicko2_torch import Glicko2Torch
-
-    elo_gpu = EloTorch(k_factor=32)  # Uses CUDA if available
-    elo_gpu.fit(dataset)
 """
 
-from .data import GameDataset, GameBatch, TorchGameBatch, PredictionResult
-from .base import RatingSystem, RatingSystemType, PlayerRatings, TorchPlayerRatings
+from .data import GameDataset, GameBatch, PredictionResult
+from .base import RatingSystem, RatingSystemType, PlayerRatings
 from .systems import (
     # Default (Numba) implementations
     Elo,
@@ -63,6 +61,13 @@ from .systems import (
     # Batch systems
     WHR,
     TrueSkillThroughTime,
+    SurfaceTTT,
+    # Surface constants
+    SURFACE_HARD,
+    SURFACE_CLAY,
+    SURFACE_GRASS,
+    SURFACE_NON_CLAY,
+    SURFACE_NAMES,
 )
 from .results import FittedEloRatings, FittedGlickoRatings, FittedTrueSkillRatings, FittedYukselRatings
 from .evaluation import (
@@ -75,7 +80,6 @@ from .evaluation import (
     calibration_error,
     compare_systems,
 )
-from .utils import get_device, is_torch_available
 
 __version__ = "0.1.0"
 
@@ -83,14 +87,12 @@ __all__ = [
     # Data
     "GameDataset",
     "GameBatch",
-    "TorchGameBatch",
     "PredictionResult",
     # Base
     "RatingSystem",
     "RatingSystemType",
     "PlayerRatings",
-    "TorchPlayerRatings",
-    # Default (Numba) systems
+    # Rating systems
     "Elo",
     "EloConfig",
     "Glicko",
@@ -101,14 +103,20 @@ __all__ = [
     "TrueSkillConfig",
     "Yuksel",
     "YukselConfig",
+    "WHR",
+    "TrueSkillThroughTime",
+    "SurfaceTTT",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",
     "FittedTrueSkillRatings",
     "FittedYukselRatings",
-    # Batch systems
-    "WHR",
-    "TrueSkillThroughTime",
+    # Surface constants
+    "SURFACE_HARD",
+    "SURFACE_CLAY",
+    "SURFACE_GRASS",
+    "SURFACE_NON_CLAY",
+    "SURFACE_NAMES",
     # Evaluation
     "Backtester",
     "BacktestResult",
@@ -118,7 +126,4 @@ __all__ = [
     "accuracy",
     "calibration_error",
     "compare_systems",
-    # Utils
-    "get_device",
-    "is_torch_available",
 ]

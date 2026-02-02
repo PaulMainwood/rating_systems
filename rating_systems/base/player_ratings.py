@@ -1,13 +1,10 @@
-"""Container for player ratings (numpy-based for broad compatibility)."""
+"""Container for player ratings."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, Optional
 
 import numpy as np
 import polars as pl
-
-if TYPE_CHECKING:
-    import torch
 
 
 @dataclass
@@ -77,83 +74,5 @@ class PlayerRatings:
             rd=self.rd.copy() if self.rd is not None else None,
             volatility=self.volatility.copy() if self.volatility is not None else None,
             last_played=self.last_played.copy() if self.last_played is not None else None,
-            metadata=self.metadata.copy(),
-        )
-
-
-@dataclass
-class TorchPlayerRatings:
-    """
-    Container for player ratings using PyTorch tensors (for torch-based systems).
-    """
-
-    ratings: "torch.Tensor"  # (num_players,) Primary rating
-    device: "torch.device" = field(default_factory=lambda: __import__("torch").device("cpu"))
-
-    # Optional additional parameters
-    rd: Optional["torch.Tensor"] = None
-    volatility: Optional["torch.Tensor"] = None
-    last_played: Optional["torch.Tensor"] = None
-
-    # Metadata
-    metadata: Dict = field(default_factory=dict)
-
-    @property
-    def num_players(self) -> int:
-        return len(self.ratings)
-
-    def get_rating(self, player_id: int) -> float:
-        """Get rating for a single player."""
-        return self.ratings[player_id].item()
-
-    def get_ratings_batch(self, player_ids: "torch.Tensor") -> "torch.Tensor":
-        """Get ratings for a batch of players."""
-        return self.ratings[player_ids]
-
-    def to_dataframe(self) -> pl.DataFrame:
-        """Convert ratings to a Polars DataFrame."""
-        data = {
-            "player_id": list(range(self.num_players)),
-            "rating": self.ratings.cpu().numpy(),
-        }
-
-        if self.rd is not None:
-            data["rd"] = self.rd.cpu().numpy()
-        if self.volatility is not None:
-            data["volatility"] = self.volatility.cpu().numpy()
-        if self.last_played is not None:
-            data["last_played"] = self.last_played.cpu().numpy()
-
-        return pl.DataFrame(data)
-
-    def clone(self) -> "TorchPlayerRatings":
-        """Create a deep copy of the ratings."""
-        return TorchPlayerRatings(
-            ratings=self.ratings.clone(),
-            device=self.device,
-            rd=self.rd.clone() if self.rd is not None else None,
-            volatility=self.volatility.clone() if self.volatility is not None else None,
-            last_played=self.last_played.clone() if self.last_played is not None else None,
-            metadata=self.metadata.copy(),
-        )
-
-    def to(self, device: "torch.device") -> "TorchPlayerRatings":
-        """Move ratings to specified device."""
-        return TorchPlayerRatings(
-            ratings=self.ratings.to(device),
-            device=device,
-            rd=self.rd.to(device) if self.rd is not None else None,
-            volatility=self.volatility.to(device) if self.volatility is not None else None,
-            last_played=self.last_played.to(device) if self.last_played is not None else None,
-            metadata=self.metadata.copy(),
-        )
-
-    def to_numpy(self) -> PlayerRatings:
-        """Convert to numpy-based PlayerRatings."""
-        return PlayerRatings(
-            ratings=self.ratings.cpu().numpy(),
-            rd=self.rd.cpu().numpy() if self.rd is not None else None,
-            volatility=self.volatility.cpu().numpy() if self.volatility is not None else None,
-            last_played=self.last_played.cpu().numpy() if self.last_played is not None else None,
             metadata=self.metadata.copy(),
         )

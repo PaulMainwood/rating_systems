@@ -1,13 +1,9 @@
-"""Data types for rating systems (numpy-based for broad compatibility)."""
+"""Data types for rating systems."""
 
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 import numpy as np
-
-# Optional torch support for torch-based systems
-if TYPE_CHECKING:
-    import torch
 
 
 @dataclass
@@ -27,47 +23,6 @@ class GameBatch:
         self.player1 = np.ascontiguousarray(self.player1, dtype=np.int64)
         self.player2 = np.ascontiguousarray(self.player2, dtype=np.int64)
         self.scores = np.ascontiguousarray(self.scores, dtype=np.float64)
-
-    def to_torch(self, device: Optional["torch.device"] = None) -> "TorchGameBatch":
-        """Convert to PyTorch tensors for torch-based systems."""
-        import torch
-        return TorchGameBatch(
-            player1=torch.from_numpy(self.player1).to(device or torch.device("cpu")),
-            player2=torch.from_numpy(self.player2).to(device or torch.device("cpu")),
-            scores=torch.from_numpy(self.scores).float().to(device or torch.device("cpu")),
-            day=self.day,
-        )
-
-
-@dataclass
-class TorchGameBatch:
-    """A batch of games using PyTorch tensors (for torch-based systems)."""
-
-    player1: "torch.Tensor"  # (N,) int64 - Player 1 IDs
-    player2: "torch.Tensor"  # (N,) int64 - Player 2 IDs
-    scores: "torch.Tensor"   # (N,) float32 - Scores
-    day: int
-
-    def __len__(self) -> int:
-        return len(self.player1)
-
-    def to(self, device: "torch.device") -> "TorchGameBatch":
-        """Move batch to specified device."""
-        return TorchGameBatch(
-            player1=self.player1.to(device),
-            player2=self.player2.to(device),
-            scores=self.scores.to(device),
-            day=self.day,
-        )
-
-    def to_numpy(self) -> GameBatch:
-        """Convert to numpy arrays."""
-        return GameBatch(
-            player1=self.player1.cpu().numpy(),
-            player2=self.player2.cpu().numpy(),
-            scores=self.scores.cpu().numpy(),
-            day=self.day,
-        )
 
 
 @dataclass

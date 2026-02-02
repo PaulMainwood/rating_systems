@@ -1,4 +1,19 @@
 from .ttt import TrueSkillThroughTime
-from .ttt_torch import TrueSkillThroughTimeTorch
+from .surface_ttt import (
+    SurfaceTTT,
+    SURFACE_HARD,
+    SURFACE_CLAY,
+    SURFACE_GRASS,
+    SURFACE_NON_CLAY,
+    SURFACE_NAMES,
+)
 
-__all__ = ["TrueSkillThroughTime", "TrueSkillThroughTimeTorch"]
+__all__ = [
+    "TrueSkillThroughTime",
+    "SurfaceTTT",
+    "SURFACE_HARD",
+    "SURFACE_CLAY",
+    "SURFACE_GRASS",
+    "SURFACE_NON_CLAY",
+    "SURFACE_NAMES",
+]

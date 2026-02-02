@@ -213,6 +213,164 @@ def compute_game_likelihoods(
 
 
 # =============================================================================
+# Weighted team game likelihood computation (for surface-specific TTT)
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def compute_weighted_team_likelihoods(
+    # Team 1: base player + surface player
+    t1_base_mu: float, t1_base_sigma: float,
+    t1_surf_mu: float, t1_surf_sigma: float,
+    # Team 2: base player + surface player
+    t2_base_mu: float, t2_base_sigma: float,
+    t2_surf_mu: float, t2_surf_sigma: float,
+    # Weights
+    w_base: float, w_surf: float,
+    # Team 1 wins?
+    t1_wins: bool,
+    beta: float,
+) -> tuple:
+    """
+    Compute likelihood messages for all 4 players from a weighted team game.
+
+    Team performance = w_base * base_skill + w_surf * surface_skill
+    Team perf variance = w_base² * (σ_base² + β²) + w_surf² * (σ_surf² + β²)
+
+    Returns: (t1_base_lik_mu, t1_base_lik_sigma,
+              t1_surf_lik_mu, t1_surf_lik_sigma,
+              t2_base_lik_mu, t2_base_lik_sigma,
+              t2_surf_lik_mu, t2_surf_lik_sigma)
+    """
+    w_base_sq = w_base * w_base
+    w_surf_sq = w_surf * w_surf
+    beta_sq = beta * beta
+
+    # Team 1 combined skill
+    t1_mu = w_base * t1_base_mu + w_surf * t1_surf_mu
+    t1_perf_var = w_base_sq * (t1_base_sigma * t1_base_sigma + beta_sq) + \
+                  w_surf_sq * (t1_surf_sigma * t1_surf_sigma + beta_sq)
+    t1_perf_sigma = math.sqrt(t1_perf_var)
+
+    # Team 2 combined skill
+    t2_mu = w_base * t2_base_mu + w_surf * t2_surf_mu
+    t2_perf_var = w_base_sq * (t2_base_sigma * t2_base_sigma + beta_sq) + \
+                  w_surf_sq * (t2_surf_sigma * t2_surf_sigma + beta_sq)
+    t2_perf_sigma = math.sqrt(t2_perf_var)
+
+    # Difference distribution
+    if t1_wins:
+        diff_mu = t1_mu - t2_mu
+    else:
+        diff_mu = t2_mu - t1_mu
+    diff_var = t1_perf_var + t2_perf_var
+    diff_sigma = math.sqrt(diff_var)
+
+    # Truncate (observe diff > 0 for winner)
+    mu_trunc, sigma_trunc = trunc(diff_mu, diff_sigma, 0.0, True)
+
+    trunc_var = sigma_trunc * sigma_trunc
+
+    if abs(diff_var - trunc_var) < 1e-10:
+        # No update (degenerate case)
+        return (0.0, INF_SIGMA, 0.0, INF_SIGMA,
+                0.0, INF_SIGMA, 0.0, INF_SIGMA)
+
+    # Compute the update direction and magnitude
+    # delta_div is the posterior mean shift for the difference
+    delta_div = (diff_var * mu_trunc - trunc_var * diff_mu) / (diff_var - trunc_var)
+    theta_div_sq = (trunc_var * diff_var) / (diff_var - trunc_var)
+
+    # The shift in team means
+    team_shift = delta_div - diff_mu
+
+    # Distribute the shift to individual components proportional to weight²/variance contribution
+    # Each component's contribution to team perf variance is w² * (σ² + β²)
+    t1_base_contrib = w_base_sq * (t1_base_sigma * t1_base_sigma + beta_sq)
+    t1_surf_contrib = w_surf_sq * (t1_surf_sigma * t1_surf_sigma + beta_sq)
+    t2_base_contrib = w_base_sq * (t2_base_sigma * t2_base_sigma + beta_sq)
+    t2_surf_contrib = w_surf_sq * (t2_surf_sigma * t2_surf_sigma + beta_sq)
+
+    total_var = t1_base_contrib + t1_surf_contrib + t2_base_contrib + t2_surf_contrib
+
+    # Likelihood sigma: derived from precision update
+    # For weighted contribution, the effective sigma is scaled
+    lik_var_base = theta_div_sq + diff_var - t1_base_sigma * t1_base_sigma
+    lik_var_surf = theta_div_sq + diff_var - t1_surf_sigma * t1_surf_sigma
+
+    if lik_var_base < 1e-10:
+        lik_var_base = 1e-10
+    if lik_var_surf < 1e-10:
+        lik_var_surf = 1e-10
+
+    # Scale likelihood sigma by weight (smaller weight = weaker update = larger sigma)
+    t1_base_lik_sigma = math.sqrt(lik_var_base) / w_base if w_base > 1e-10 else INF_SIGMA
+    t1_surf_lik_sigma = math.sqrt(lik_var_surf) / w_surf if w_surf > 1e-10 else INF_SIGMA
+
+    lik_var_base2 = theta_div_sq + diff_var - t2_base_sigma * t2_base_sigma
+    lik_var_surf2 = theta_div_sq + diff_var - t2_surf_sigma * t2_surf_sigma
+
+    if lik_var_base2 < 1e-10:
+        lik_var_base2 = 1e-10
+    if lik_var_surf2 < 1e-10:
+        lik_var_surf2 = 1e-10
+
+    t2_base_lik_sigma = math.sqrt(lik_var_base2) / w_base if w_base > 1e-10 else INF_SIGMA
+    t2_surf_lik_sigma = math.sqrt(lik_var_surf2) / w_surf if w_surf > 1e-10 else INF_SIGMA
+
+    # Likelihood means: shift proportional to contribution
+    if t1_wins:
+        t1_base_lik_mu = t1_base_mu + team_shift / w_base if w_base > 1e-10 else t1_base_mu
+        t1_surf_lik_mu = t1_surf_mu + team_shift / w_surf if w_surf > 1e-10 else t1_surf_mu
+        t2_base_lik_mu = t2_base_mu - team_shift / w_base if w_base > 1e-10 else t2_base_mu
+        t2_surf_lik_mu = t2_surf_mu - team_shift / w_surf if w_surf > 1e-10 else t2_surf_mu
+    else:
+        t1_base_lik_mu = t1_base_mu - team_shift / w_base if w_base > 1e-10 else t1_base_mu
+        t1_surf_lik_mu = t1_surf_mu - team_shift / w_surf if w_surf > 1e-10 else t1_surf_mu
+        t2_base_lik_mu = t2_base_mu + team_shift / w_base if w_base > 1e-10 else t2_base_mu
+        t2_surf_lik_mu = t2_surf_mu + team_shift / w_surf if w_surf > 1e-10 else t2_surf_mu
+
+    return (t1_base_lik_mu, t1_base_lik_sigma,
+            t1_surf_lik_mu, t1_surf_lik_sigma,
+            t2_base_lik_mu, t2_base_lik_sigma,
+            t2_surf_lik_mu, t2_surf_lik_sigma)
+
+
+@njit(cache=True, fastmath=True)
+def predict_weighted_team(
+    t1_base_mu: float, t1_base_sigma: float,
+    t1_surf_mu: float, t1_surf_sigma: float,
+    t2_base_mu: float, t2_base_sigma: float,
+    t2_surf_mu: float, t2_surf_sigma: float,
+    w_base: float, w_surf: float,
+    beta: float,
+) -> float:
+    """
+    Predict probability that team 1 beats team 2.
+
+    Team skill = w_base * base + w_surf * surface
+    """
+    w_base_sq = w_base * w_base
+    w_surf_sq = w_surf * w_surf
+    beta_sq = beta * beta
+
+    # Team means
+    t1_mu = w_base * t1_base_mu + w_surf * t1_surf_mu
+    t2_mu = w_base * t2_base_mu + w_surf * t2_surf_mu
+
+    # Team performance variances
+    t1_var = w_base_sq * (t1_base_sigma * t1_base_sigma + beta_sq) + \
+             w_surf_sq * (t1_surf_sigma * t1_surf_sigma + beta_sq)
+    t2_var = w_base_sq * (t2_base_sigma * t2_base_sigma + beta_sq) + \
+             w_surf_sq * (t2_surf_sigma * t2_surf_sigma + beta_sq)
+
+    # Difference
+    diff_mu = t1_mu - t2_mu
+    diff_sigma = math.sqrt(t1_var + t2_var)
+
+    return norm_cdf(diff_mu / diff_sigma)
+
+
+# =============================================================================
 # Batch processing - core TTT algorithm
 # =============================================================================
 

@@ -1,20 +1,18 @@
 """Rating system implementations.
 
-Default implementations (Numba-based, high performance):
+Online systems (incremental updates):
 - Elo: Classic Elo rating system
 - Glicko: Glicko rating system with rating deviation
 - Glicko2: Glicko-2 rating system with volatility
 - TrueSkill: Bayesian skill estimation with Gaussian beliefs
-- Yuksel: Adaptive rating system with uncertainty tracking (Yuksel 2024)
+- Yuksel: Adaptive rating system with uncertainty tracking
 
 Batch systems (refit on full history):
 - WHR: Whole History Rating
 - TrueSkillThroughTime: TrueSkill Through Time
+- SurfaceTTT: Surface-specific TrueSkill Through Time
 
-PyTorch implementations (GPU acceleration) are available via explicit imports:
-- from rating_systems.systems.elo.elo_torch import EloTorch
-- from rating_systems.systems.glicko.glicko_torch import GlickoTorch
-- from rating_systems.systems.glicko2.glicko2_torch import Glicko2Torch
+All implementations use Numba for high performance.
 """
 
 # Default Numba implementations
@@ -26,7 +24,14 @@ from .yuksel import Yuksel, YukselConfig
 
 # Batch systems (keep existing implementations)
 from .whr import WHR
-from .trueskill_through_time import TrueSkillThroughTime
+from .trueskill_through_time import TrueSkillThroughTime, SurfaceTTT
+from .trueskill_through_time import (
+    SURFACE_HARD,
+    SURFACE_CLAY,
+    SURFACE_GRASS,
+    SURFACE_NON_CLAY,
+    SURFACE_NAMES,
+)
 
 __all__ = [
     # Default (Numba) implementations
@@ -43,4 +48,12 @@ __all__ = [
     # Batch systems
     "WHR",
     "TrueSkillThroughTime",
+    "SurfaceTTT",
+    # Surface constants (input values)
+    "SURFACE_HARD",
+    "SURFACE_CLAY",
+    "SURFACE_GRASS",
+    # Surface constants (internal)
+    "SURFACE_NON_CLAY",
+    "SURFACE_NAMES",
 ]
