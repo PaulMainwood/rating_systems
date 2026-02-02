@@ -41,7 +41,7 @@ class OptimizationResult:
             f"Best Parameters: {params_str}\n"
             f"Best Brier Score: {self.best_brier:.6f}\n"
             f"Best Log Loss: {self.best_log_loss:.6f}\n"
-            f"Best Accuracy: {self.best_accuracy:.4f}\n"
+            f"Best Accuracy: {self.best_accuracy:.1%}\n"
             f"Evaluations: {self.n_evaluations}\n"
             f"Total Time: {self.total_time:.1f}s\n"
             f"{'='*60}"
@@ -173,7 +173,7 @@ class RatingSystemOptimizer:
                                    if k in self._param_names)
             best_marker = " *BEST*" if is_best else ""
             print(f"  [{self._eval_count:3d}] Brier={brier:.6f} LogLoss={log_loss:.6f} "
-                  f"| {params_str} ({elapsed:.1f}s){best_marker}")
+                  f"Acc={accuracy:.4f} | {params_str} ({elapsed:.1f}s){best_marker}")
 
         return brier
 
