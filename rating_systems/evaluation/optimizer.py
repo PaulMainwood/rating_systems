@@ -507,7 +507,7 @@ def optimize_whr(
         WHR,
         dataset,
         train_ratio=train_ratio,
-        fixed_params={"max_iterations": 50, "update_max_iterations": 20},
+        fixed_params={"max_iterations": 1000, "refit_max_iterations": 10},
         max_test_days=max_test_days,
     )
 
