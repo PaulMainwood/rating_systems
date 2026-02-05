@@ -1,0 +1,583 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{natbib}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{abstract}
+\usepackage{titlesec}
+\usepackage{float}
+\usepackage{array}
+\usepackage{tabularx}
+
+\geometry{margin=2.5cm}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\sigmoid}{\sigma}
+\newcommand{\rd}{\mathrm{RD}}
+\newcommand{\pwin}{p_{\mathrm{win}}}
+
+\title{\textbf{Incorporating Observation Weights into\\Competitive Rating Systems}\\[0.5em]
+\large A Unified Treatment of Weighted Updates\\for Elo, Glicko, Glicko-2, Whole History Rating,\\and TrueSkill Through Time}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+Competitive rating systems typically treat all match outcomes as equally informative.
+In practice, however, external information---such as margin of victory, match importance, or
+confidence in the recorded result---may justify assigning heterogeneous weights to individual
+observations. We present a systematic treatment of how an arbitrary per-game weight
+$w_j > 0$ may be incorporated into five widely-used rating systems: Elo, Glicko, Glicko-2,
+Whole History Rating (WHR), and TrueSkill Through Time (TTT). For each system, we
+derive the weighted update equations, establish the statistical interpretation of the
+weighting mechanism, and identify invariants that are preserved or broken. We distinguish
+throughout between two complementary approaches: \emph{score revaluation}, in which the
+observed outcome is mapped to a continuous value in $[0,1]$; and \emph{observation weighting},
+in which the influence of a game on the update is scaled by an exogenous factor.
+\end{abstract}
+
+\vspace{1em}
+
+\section{Introduction}
+
+The problem of estimating latent skill from pairwise competition outcomes has produced
+a rich family of rating systems, from the classical Elo system \citep{elo1978} to modern
+Bayesian approaches such as Whole History Rating \citep{coulom2008} and TrueSkill Through
+Time \citep{dangauthier2007}. These systems share a common structure: observed match
+outcomes update beliefs about player strength according to the discrepancy between
+prediction and observation.
+
+In the standard formulation, each game contributes equally to the update. Yet there are
+numerous practical scenarios in which differential weighting is desirable:
+
+\begin{itemize}[nosep]
+    \item \textbf{Margin of victory.} A decisive 6--0 result may carry more information
+          about relative strength than a narrow 7--6 result.
+    \item \textbf{Match importance.} Tournament finals may warrant greater influence than
+          qualifying rounds.
+    \item \textbf{Data quality.} Results from verified sources may deserve higher weight
+          than unverified reports.
+    \item \textbf{Recency.} In online systems without native temporal dynamics, recent
+          results may be upweighted as a proxy for skill evolution.
+\end{itemize}
+
+We consider a weight $w_j \in (0, \infty)$ associated with each game $j$, where $w_j = 1$
+corresponds to a standard game, $w_j > 1$ indicates a more informative observation, and
+$w_j < 1$ indicates a less informative one. The central question is: for each rating
+system, where does $w_j$ enter the update equations, and what is the statistical
+justification?
+
+We additionally distinguish between two conceptually different mechanisms. In
+\emph{score revaluation}, the observed outcome $s_j$ is replaced by a continuous value
+in $[0,1]$ that reflects the degree of victory (e.g., mapping a scoreline to a fractional
+score). In \emph{observation weighting}, the update magnitude is scaled by $w_j$ while
+the observed score remains binary. These approaches answer different questions: score
+revaluation changes \emph{what was observed}; observation weighting changes \emph{how
+much the observation counts}. They may also be combined.
+
+\Cref{sec:elo} through \Cref{sec:ttt} treat each rating system in turn.
+\Cref{sec:summary} provides a comparative summary, and \Cref{sec:discussion} discusses
+practical considerations.
+
+\section{Preliminaries and Notation}
+
+Let $\mathcal{G} = \{(i_j, k_j, s_j, t_j)\}_{j=1}^{N}$ denote a dataset of $N$ games,
+where $i_j$ and $k_j$ are the two players, $s_j \in [0,1]$ is the score from the
+perspective of player $i_j$ (with $s_j = 1$ a win, $s_j = 0$ a loss, and $s_j = 0.5$ a
+draw), and $t_j$ is the time of the game.
+
+For the weighted setting, each game additionally carries a weight $w_j > 0$. We write
+$r_i$ for the rating of player $i$, and use system-specific notation for additional state
+variables (rating deviation, volatility, etc.) as introduced in each section.
+
+The logistic function is denoted $\sigmoid(x) = (1 + e^{-x})^{-1}$.
+
+\section{Elo}\label{sec:elo}
+
+\subsection{Standard Formulation}
+
+The Elo system \citep{elo1978} maintains a single rating $r_i \in \R$ for each player.
+Given a game between players $i$ and $k$ with outcome $s \in \{0, 1\}$, the expected score
+for player $i$ is
+\begin{equation}\label{eq:elo-expected}
+    E_{ik} = \sigmoid\!\left(\frac{\ln 10}{\lambda}(r_i - r_k)\right),
+\end{equation}
+where $\lambda$ is a scale parameter (conventionally $\lambda = 400$). The rating update is
+\begin{equation}\label{eq:elo-update}
+    r_i \leftarrow r_i + K(s - E_{ik}), \qquad
+    r_k \leftarrow r_k - K(s - E_{ik}),
+\end{equation}
+where $K > 0$ is the step size (K-factor). The update is zero-sum:
+$\Delta r_i + \Delta r_k = 0$.
+
+\subsection{Weighted Formulation}
+
+\begin{proposition}[Weighted Elo update]
+Given a per-game weight $w_j$, the weighted Elo update is
+\begin{equation}\label{eq:elo-weighted}
+    \Delta r_i = K \cdot w_j \cdot (s_j - E_{ik}), \qquad
+    \Delta r_k = -K \cdot w_j \cdot (s_j - E_{ik}).
+\end{equation}
+\end{proposition}
+
+This is equivalent to replacing the K-factor with a game-specific $K_j = K \cdot w_j$.
+The update remains zero-sum. The interpretation is straightforward: a game with weight
+$w_j = 2$ produces twice the rating change of a standard game.
+
+\begin{remark}
+Since Elo tracks no uncertainty, there is no principled mechanism to calibrate $w_j$
+from within the system. The choice of weights is entirely a modelling decision imposed
+externally. This contrasts with the systems that follow, where weighting has a natural
+statistical interpretation.
+\end{remark}
+
+\begin{remark}[Score revaluation]
+\Cref{eq:elo-update} already permits continuous scores $s_j \in [0,1]$. A scoreline may
+be mapped to a fractional score---for example, $s_j = 0.5 + \alpha \cdot m_j / m_{\max}$
+for some margin $m_j$---and the update proceeds identically. This changes the residual
+$(s_j - E_{ik})$ rather than scaling it.
+\end{remark}
+
+\section{Glicko}\label{sec:glicko}
+
+\subsection{Standard Formulation}
+
+The Glicko system \citep{glickman1999} augments each player's rating $r_i$ with a rating
+deviation $\phi_i > 0$ representing uncertainty. Let $q = \ln 10 / 400$. The weighting
+function
+\begin{equation}\label{eq:glicko-g}
+    g(\phi) = \frac{1}{\sqrt{1 + 3q^2\phi^2/\pi^2}}
+\end{equation}
+downweights the contribution of opponents with high uncertainty. The expected score
+against opponent $k$ is
+\begin{equation}
+    E_{ik} = \sigmoid\!\Big(g(\phi_k)\, q\, (r_i - r_k)\Big).
+\end{equation}
+
+Within a rating period, a player's games are treated as simultaneous. The update
+aggregates over all opponents $k \in \mathcal{O}_i$:
+\begin{align}
+    d_i^2 &= \left(q^2 \sum_{k \in \mathcal{O}_i} g(\phi_k)^2\, E_{ik}(1 - E_{ik})\right)^{-1}, \label{eq:glicko-d2}\\[4pt]
+    r_i' &= r_i + \frac{q}{\phi_i'^{-2} + d_i^{-2}} \sum_{k \in \mathcal{O}_i} g(\phi_k)(s_k - E_{ik}), \label{eq:glicko-rating}\\[4pt]
+    \phi_i' &= \left(\phi_i^{-2} + d_i^{-2}\right)^{-1/2}. \label{eq:glicko-rd}
+\end{align}
+
+\subsection{Weighted Formulation}
+
+The quantity $d_i^{-2}$ is the Fisher information contributed by the games in the
+current period. Weighting game $j$ by $w_j$ scales its contribution to the information:
+
+\begin{proposition}[Weighted Glicko update]
+Let $w_j$ be the weight for the game against opponent $k_j$. The weighted update
+equations are:
+\begin{align}
+    d_i^{2} &= \left(q^2 \sum_{j} w_j\, g(\phi_{k_j})^2\, E_{ij}(1 - E_{ij})\right)^{-1}, \label{eq:glicko-d2-w}\\[4pt]
+    r_i' &= r_i + q\,\phi_i'^{2} \sum_{j} w_j\, g(\phi_{k_j})(s_j - E_{ij}), \label{eq:glicko-rating-w}\\[4pt]
+    \phi_i' &= \left(\phi_i^{-2} + d_i^{-2}\right)^{-1/2}. \label{eq:glicko-rd-w}
+\end{align}
+\end{proposition}
+
+The interpretation is that game $j$ is treated as $w_j$ independent games with the same
+result. When $w_j > 1$, the game contributes more information (reduces $\phi_i$ more) and
+has greater influence on the rating update. When $w_j < 1$, the game is partially
+discounted.
+
+\begin{remark}
+The RD update in \cref{eq:glicko-rd-w} is unchanged in form but inherits the weighting
+through $d_i^{-2}$. A single game with $w_j = 3$ reduces RD by the same amount as three
+unweighted games with the same result---a natural and desirable property.
+\end{remark}
+
+\section{Glicko-2}\label{sec:glicko2}
+
+\subsection{Standard Formulation}
+
+Glicko-2 \citep{glickman2001} extends Glicko with a volatility parameter
+$\sigma_i > 0$ that models the degree to which a player's strength fluctuates over time.
+Ratings are internally represented on a compressed scale:
+$\mu_i = (r_i - 1500)/173.7178$ and $\phi_i = \rd_i / 173.7178$.
+
+The update proceeds in several steps. First, compute the variance $v$ and improvement
+$\delta$:
+\begin{align}
+    v^{-1} &= \sum_{j} g(\phi_{k_j})^2\, E_j(1 - E_j), \label{eq:g2-v}\\
+    \delta &= v \sum_{j} g(\phi_{k_j})(s_j - E_j), \label{eq:g2-delta}
+\end{align}
+where $g(\phi) = 1/\sqrt{1 + 3\phi^2/\pi^2}$ and
+$E_j = \sigmoid(g(\phi_{k_j})(\mu_i - \mu_{k_j}))$, both now in the Glicko-2 internal
+scale.
+
+The volatility $\sigma_i$ is then updated via an iterative procedure (the
+``Illinois algorithm'') that solves
+\begin{equation}\label{eq:g2-volatility}
+    f(x) = \frac{e^x(\delta^2 - \phi^2 - v - e^x)}{2(\phi^2 + v + e^x)^2}
+            - \frac{x - \ln \sigma^2}{\tau^2} = 0
+\end{equation}
+for $x$, yielding $\sigma' = e^{x/2}$. Finally:
+\begin{align}
+    \phi^* &= \sqrt{\phi^2 + \sigma'^2}, \label{eq:g2-phistar}\\
+    \phi' &= \left(\phi^{*-2} + v^{-1}\right)^{-1/2}, \label{eq:g2-phi}\\
+    \mu' &= \mu + \phi'^2 \sum_{j} g(\phi_{k_j})(s_j - E_j). \label{eq:g2-mu}
+\end{align}
+
+\subsection{Weighted Formulation}
+
+\begin{proposition}[Weighted Glicko-2 update]
+Introducing per-game weights $w_j$, the modified equations are:
+\begin{align}
+    v^{-1} &= \sum_{j} w_j\, g(\phi_{k_j})^2\, E_j(1 - E_j), \label{eq:g2-v-w}\\
+    \delta &= v \sum_{j} w_j\, g(\phi_{k_j})(s_j - E_j). \label{eq:g2-delta-w}
+\end{align}
+The volatility update in \cref{eq:g2-volatility} and the subsequent steps in
+\cref{eq:g2-phistar,eq:g2-phi,eq:g2-mu} are unchanged in form; they receive the weighted
+$v$ and $\delta$ as inputs.
+\end{proposition}
+
+The weighting propagates naturally into the volatility estimate. Consider a player who
+achieves a surprising upset: if this game carries weight $w_j = 3$, then $\delta$ is
+larger, which in turn produces a larger increase in volatility via \cref{eq:g2-volatility}.
+This is desirable---a heavily-weighted upset is stronger evidence that the player's
+strength is genuinely changing.
+
+\begin{remark}
+The rating update in \cref{eq:g2-mu} contains a sum that must also be weighted:
+\begin{equation}
+    \mu' = \mu + \phi'^2 \sum_{j} w_j\, g(\phi_{k_j})(s_j - E_j).
+\end{equation}
+This is consistent with the weighted $\delta$ but is written explicitly to avoid ambiguity,
+since \cref{eq:g2-mu} in some presentations uses $\delta/v$ rather than the raw sum.
+\end{remark}
+
+\section{Whole History Rating}\label{sec:whr}
+
+\subsection{Standard Formulation}
+
+Whole History Rating \citep{coulom2008} models each player's strength as a Wiener process
+(Brownian motion) over time. Let $r_i(t)$ denote the rating of player $i$ at time $t$ on
+the natural (log-gamma) scale. The prior is:
+\begin{equation}\label{eq:whr-prior}
+    r_i(t + \Delta t) \mid r_i(t) \sim \N\!\left(r_i(t),\; w^2 \Delta t\right),
+\end{equation}
+where $w^2$ is the Wiener variance parameter. Each player's rating history is discretised
+at \emph{player-days}---time points at which the player has games. A virtual prior game
+at day zero anchors the rating to a prior mean.
+
+The game likelihood under the Bradley--Terry model is:
+\begin{equation}\label{eq:whr-bt}
+    P(i \text{ beats } k \mid r_i, r_k) = \sigmoid(r_i - r_k).
+\end{equation}
+
+The MAP estimate is obtained via Newton--Raphson optimisation. For each player-day $d$
+of player $i$, the gradient and (diagonal) Hessian of the log-posterior are:
+\begin{align}
+    \frac{\partial \ell}{\partial r_d} &=
+        \underbrace{\sum_{j \in \mathcal{G}_d} \left(s_j - \sigmoid(r_d - r_{k_j})\right)}_{\text{game terms}}
+        - \underbrace{\frac{r_d - r_{d-1}}{w^2 \Delta t_{d-1,d}}
+        - \frac{r_d - r_{d+1}}{w^2 \Delta t_{d,d+1}}}_{\text{Wiener process prior}}, \label{eq:whr-grad}\\[6pt]
+    \frac{\partial^2 \ell}{\partial r_d^2} &=
+        -\sum_{j \in \mathcal{G}_d} p_j(1 - p_j)
+        - \frac{1}{w^2 \Delta t_{d-1,d}}
+        - \frac{1}{w^2 \Delta t_{d,d+1}}, \label{eq:whr-hess}
+\end{align}
+where $p_j = \sigmoid(r_d - r_{k_j})$ and $\mathcal{G}_d$ is the set of games on
+player-day $d$. The off-diagonal Hessian entries couple consecutive player-days via the
+Wiener process, yielding a tridiagonal system solved by the Thomas algorithm.
+
+\subsection{Weighted Formulation}
+
+\begin{proposition}[Weighted WHR update]
+Introducing per-game weights $w_j$, the gradient and Hessian become:
+\begin{align}
+    \frac{\partial \ell_w}{\partial r_d} &=
+        \sum_{j \in \mathcal{G}_d} w_j\!\left(s_j - \sigmoid(r_d - r_{k_j})\right)
+        - \frac{r_d - r_{d-1}}{w^2 \Delta t_{d-1,d}}
+        - \frac{r_d - r_{d+1}}{w^2 \Delta t_{d,d+1}}, \label{eq:whr-grad-w}\\[6pt]
+    \frac{\partial^2 \ell_w}{\partial r_d^2} &=
+        -\sum_{j \in \mathcal{G}_d} w_j\, p_j(1 - p_j)
+        - \frac{1}{w^2 \Delta t_{d-1,d}}
+        - \frac{1}{w^2 \Delta t_{d,d+1}}. \label{eq:whr-hess-w}
+\end{align}
+\end{proposition}
+
+\noindent This is the most theoretically transparent of all the systems considered. The
+modification corresponds to optimising the \emph{weighted} log-likelihood:
+\begin{equation}\label{eq:whr-weighted-ll}
+    \ell_w = \sum_{j=1}^{N} w_j \log P(s_j \mid r_{i_j}, r_{k_j}) + \log \pi(r),
+\end{equation}
+where $\pi(r)$ is the Wiener process prior density. This is a standard construction in
+robust statistics and survey methodology.
+
+\begin{remark}[Structural preservation]
+The tridiagonal structure of the Hessian is preserved because the weights affect only the
+diagonal game terms, not the off-diagonal Wiener process couplings. The Thomas algorithm
+solver requires no modification.
+\end{remark}
+
+\begin{remark}[Uncertainty propagation]
+WHR computes posterior uncertainties as $\rd_d \approx |\partial^2 \ell / \partial r_d^2|^{-1/2}$.
+Under weighting, a game with $w_j > 1$ increases $|\partial^2 \ell / \partial r_d^2|$
+and hence reduces the uncertainty more than a standard game---precisely the desired behaviour.
+\end{remark}
+
+\begin{remark}[Continuous scores]
+The Bradley--Terry gradient $s_j - \sigmoid(r_d - r_{k_j})$ naturally accommodates
+continuous scores $s_j \in [0,1]$. A scoreline-derived continuous score and an importance
+weight may be applied simultaneously, yielding a doubly-modified gradient
+$w_j(s_j^* - p_j)$ where $s_j^*$ is the revalued score.
+\end{remark}
+
+\section{TrueSkill Through Time}\label{sec:ttt}
+
+\subsection{Standard Formulation}
+
+TrueSkill Through Time \citep{dangauthier2007} models each player's skill as a
+time-varying Gaussian:
+\begin{equation}
+    \theta_i(t) \sim \N(\mu_i(t),\, \sigma_i(t)^2).
+\end{equation}
+Skill evolves via a random walk with dynamics parameter $\gamma$:
+\begin{equation}\label{eq:ttt-dynamics}
+    \sigma_i(t + \Delta t)^2 = \sigma_i(t)^2 + \gamma^2 \Delta t.
+\end{equation}
+
+In a game, each player produces a \emph{performance} drawn from their skill plus
+independent noise:
+\begin{equation}\label{eq:ttt-performance}
+    x_i \sim \N(\theta_i,\, \beta^2),
+\end{equation}
+where $\beta > 0$ is the performance standard deviation. The observation is that the
+winner's performance exceeds the loser's: $x_{\text{winner}} > x_{\text{loser}}$.
+
+Inference proceeds by Gaussian message passing (belief propagation). The key computational
+step is the game likelihood update, which computes the posterior after observing the
+truncated performance difference:
+\begin{align}
+    d &= \mu_i - \mu_k, \qquad
+    c = \sqrt{\sigma_i^2 + \beta^2 + \sigma_k^2 + \beta^2}, \label{eq:ttt-diff}\\[4pt]
+    (\mu_{\mathrm{trunc}},\, \sigma_{\mathrm{trunc}}) &= \mathrm{trunc}^{+}(d / c), \label{eq:ttt-trunc}
+\end{align}
+where $\mathrm{trunc}^{+}$ denotes the moments of a standard normal truncated below zero,
+computed via the hazard rate $v(t) = \varphi(t)/\Phi(t)$ and its derivative
+$w(t) = v(t)(v(t) + t)$.
+
+The algorithm alternates forward and backward sweeps through the time-ordered batches,
+passing Gaussian messages until convergence.
+
+\subsection{Weighted Formulation}
+
+The generative model in \cref{eq:ttt-performance} provides a natural entry point for
+weighting: the parameter $\beta$ controls how much noise contaminates each performance
+observation. A game-specific $\beta$ directly modulates the informativeness of that game.
+
+\begin{proposition}[Weighted TTT via per-game $\beta$]\label{prop:ttt}
+Let $w_j > 0$ be the weight for game $j$. Define the effective performance noise:
+\begin{equation}\label{eq:ttt-beta-eff}
+    \beta_j^{\mathrm{eff}} = \frac{\beta}{\sqrt{w_j}}.
+\end{equation}
+The game likelihood computation in \cref{eq:ttt-diff} becomes:
+\begin{equation}\label{eq:ttt-diff-w}
+    c_j = \sqrt{\sigma_i^2 + (\beta_j^{\mathrm{eff}})^2 + \sigma_k^2 + (\beta_j^{\mathrm{eff}})^2}
+         = \sqrt{\sigma_i^2 + \sigma_k^2 + \frac{2\beta^2}{w_j}}.
+\end{equation}
+\end{proposition}
+
+\noindent\textbf{Interpretation.} When $w_j > 1$, performance noise decreases, and the
+observation is more precise---the game is more informative about the true skill difference.
+When $w_j < 1$, noise increases, and the observation is partially discounted. In the limit
+$w_j \to \infty$, the game becomes a noiseless observation of the skill difference; in the
+limit $w_j \to 0$, the game becomes uninformative.
+
+This approach is grounded in the generative model: we are asserting that this particular
+game had less (or more) performance variability than usual. For margin-of-victory, this is
+well-motivated---a decisive result is plausibly one where both players performed close to
+their true level, reducing the effective noise.
+
+\begin{remark}[Alternative: likelihood precision scaling]
+An equivalent formulation operates at the message level. Let $(m_j, s_j^2)$ denote the
+likelihood message (mean, variance) computed from game $j$. Instead of modifying $\beta$,
+one may directly scale the precision of the likelihood message:
+\begin{equation}
+    \tilde{s}_j^{-2} = w_j \cdot s_j^{-2}.
+\end{equation}
+This produces identical results but may be more convenient in implementations where the
+game likelihood is computed as a black box.
+\end{remark}
+
+\begin{remark}[Continuous outcomes via margin]
+TTT's truncation step observes $x_{\text{winner}} > x_{\text{loser}}$, i.e., the
+performance difference exceeds zero. A richer model observes
+$x_{\text{winner}} - x_{\text{loser}} > m_j$ for some margin $m_j > 0$ derived from the
+scoreline. The truncation point shifts from $0$ to $m_j/c_j$ in the normalised variable,
+yielding a stronger update for larger margins. This is conceptually distinct from
+observation weighting but may be combined with it. The existing \texttt{trunc} function
+in most implementations already accepts a margin parameter, making this straightforward to
+implement.
+\end{remark}
+
+\section{Comparative Summary}\label{sec:summary}
+
+\Cref{tab:summary} summarises the weighting mechanism for each system.
+
+\begin{table}[H]
+\centering
+\caption{Summary of weighted update mechanisms across rating systems.}
+\label{tab:summary}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{@{}l l X l@{}}
+\toprule
+\textbf{System} & \textbf{Mechanism} & \textbf{Modification} & \textbf{Interpretation} \\
+\midrule
+Elo & Scale K-factor & $\Delta r = K \cdot w_j (s - E)$ & Policy choice \\
+Glicko & Weight information & $w_j$ in $d^{-2}$ and $\Delta r$ sums & Weighted Fisher information \\
+Glicko-2 & Weight information & $w_j$ in $v^{-1}$ and $\delta$ sums & Weighted Fisher information \\
+WHR & Weight log-likelihood & $w_j$ in gradient and Hessian & Weighted MLE/MAP \\
+TTT & Per-game $\beta$ & $\beta_j^{\mathrm{eff}} = \beta / \sqrt{w_j}$ & Performance noise model \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Several structural observations emerge:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Zero-sum preservation.} Elo's weighted update remains zero-sum by
+          construction. Glicko and Glicko-2 are not strictly zero-sum in the standard
+          formulation (the two players' updates are computed independently within a rating
+          period), and weighting does not change this. WHR and TTT are not zero-sum by
+          design, as they are MAP/posterior estimates under priors.
+
+    \item \textbf{Uncertainty interaction.} In Glicko, Glicko-2, and TTT, the weight
+          naturally interacts with the uncertainty update: a more heavily-weighted game
+          reduces uncertainty (RD or $\sigma$) by more. This is automatic and requires no
+          additional logic. In Elo, no such interaction exists. In WHR, the Hessian-based
+          uncertainty shrinks more for weighted games.
+
+    \item \textbf{Volatility propagation (Glicko-2 only).} Weighting propagates into the
+          volatility estimate via $\delta$ and $v$. A heavily-weighted surprise result
+          increases volatility more, signalling that the player's strength may be changing.
+
+    \item \textbf{Solver invariance (WHR).} The tridiagonal Newton--Raphson solver is
+          unaffected by weighting, since weights modify only diagonal terms.
+
+    \item \textbf{Message passing invariance (TTT).} The Gaussian message passing
+          structure is preserved; only the likelihood computation changes.
+\end{enumerate}
+
+\section{Discussion}\label{sec:discussion}
+
+\subsection{Score Revaluation versus Observation Weighting}
+
+These two mechanisms are complementary and address different modelling concerns.
+Score revaluation ($s_j \in [0,1]$ continuous) encodes \emph{how much} the winner won.
+Observation weighting ($w_j > 0$) encodes \emph{how informative or important} the game is.
+A 6--0 result might warrant both a high score ($s_j = 0.9$) \emph{and} a high weight
+($w_j = 1.5$), reflecting that the result was both decisive and informative.
+
+However, care is required to avoid double-counting. If the score is already continuous
+and reflects margin of victory, an additional margin-based weight may overcount the
+information in decisive results. We recommend choosing one primary mechanism per use case,
+or ensuring that the score and weight encode orthogonal information (e.g., score encodes
+margin while weight encodes match importance).
+
+\subsection{Choice of Weight Function}
+
+The mapping from external factors to weights $w_j$ is a modelling decision that lies
+outside the rating system proper. Common choices include:
+
+\begin{itemize}[nosep]
+    \item \textbf{Linear margin:} $w_j = 1 + \alpha \cdot |m_j| / m_{\max}$,
+          where $m_j$ is the score margin and $\alpha > 0$ controls sensitivity.
+    \item \textbf{Log margin:} $w_j = 1 + \alpha \cdot \log(1 + |m_j|)$,
+          which compresses large margins.
+    \item \textbf{Categorical:} $w_j \in \{0.5, 1.0, 1.5, 2.0\}$ for
+          friendly/league/cup/final.
+    \item \textbf{Autocorrelation-based:} $w_j$ derived from the model's own prediction
+          confidence, upweighting surprises. This creates a feedback loop and must be used
+          with caution.
+\end{itemize}
+
+The appropriate weight function depends heavily on the domain and should be validated
+empirically, for example by measuring predictive log-loss on held-out data across a range
+of weight parameterisations.
+
+\subsection{Computational Considerations}
+
+For the online systems (Elo, Glicko, Glicko-2), per-game weighting adds negligible
+computational cost---a single multiplication per game term. For WHR, the cost is similarly
+negligible since the gradient and Hessian computations are already per-game. For TTT, the
+per-game $\beta$ approach requires recomputing the performance variance $c_j$ for each game
+rather than using a shared constant, which is a minor cost increase within the likelihood
+computation.
+
+In all cases, the per-game weight $w_j$ must be stored alongside the game data, increasing
+memory by one float per game.
+
+\subsection{Theoretical Limitations}
+
+The ``$w_j$ independent games'' interpretation is exact only in the limit of the
+model's assumptions. In practice, a single game with weight $w_j = 3$ differs from three
+independent games in that it provides no diversity of context---the opponent, conditions,
+and time are identical. For large weights, the effective sample size may be overstated.
+Practitioners may wish to impose $w_j \leq w_{\max}$ for some reasonable bound
+(e.g., $w_{\max} = 3$).
+
+Additionally, for systems with temporal dynamics (WHR, TTT), very large weights can
+dominate the prior and produce erratic short-term rating fluctuations. The interaction
+between observation weights and temporal smoothing deserves careful empirical investigation
+in each application domain.
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{9}
+
+\bibitem[Coulom(2008)]{coulom2008}
+Coulom, R. (2008).
+\newblock Whole-History Rating: A Bayesian rating system for players of time-varying strength.
+\newblock In \emph{Computers and Games}, pp.~113--124. Springer.
+
+\bibitem[Dangauthier et~al.(2007)]{dangauthier2007}
+Dangauthier, P., Herbrich, R., Minka, T., and Graepel, T. (2007).
+\newblock TrueSkill Through Time: Revisiting the history of chess.
+\newblock In \emph{Advances in Neural Information Processing Systems}, pp.~337--344.
+
+\bibitem[Elo(1978)]{elo1978}
+Elo, A.~E. (1978).
+\newblock \emph{The Rating of Chessplayers, Past and Present}.
+\newblock Arco Publishing, New York.
+
+\bibitem[Glickman(1999)]{glickman1999}
+Glickman, M.~E. (1999).
+\newblock Parameter estimation in large dynamic paired comparison experiments.
+\newblock \emph{Journal of the Royal Statistical Society: Series C}, 48(3):377--394.
+
+\bibitem[Glickman(2001)]{glickman2001}
+Glickman, M.~E. (2001).
+\newblock Dynamic paired comparison models with stochastic variances.
+\newblock \emph{Journal of Applied Statistics}, 28(6):673--689.
+
+\end{thebibliography}
+
+\end{document}
