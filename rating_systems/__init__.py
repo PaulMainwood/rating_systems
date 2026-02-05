@@ -51,6 +51,8 @@ from .systems import (
     # Default (Numba) implementations
     Elo,
     EloConfig,
+    WElo,
+    WEloConfig,
     Glicko,
     GlickoConfig,
     Glicko2,
@@ -98,6 +100,8 @@ __all__ = [
     # Rating systems
     "Elo",
     "EloConfig",
+    "WElo",
+    "WEloConfig",
     "Glicko",
     "GlickoConfig",
     "Glicko2",

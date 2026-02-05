@@ -26,6 +26,7 @@ from .yuksel import Yuksel, YukselConfig
 
 # Batch systems (keep existing implementations)
 from .whr import WHR
+from .welo import WElo, WEloConfig
 from .trueskill_through_time import TrueSkillThroughTime, SurfaceTTT
 from .trueskill_through_time import (
     SURFACE_HARD,
@@ -39,6 +40,8 @@ __all__ = [
     # Default (Numba) implementations
     "Elo",
     "EloConfig",
+    "WElo",
+    "WEloConfig",
     "Glicko",
     "GlickoConfig",
     "Glicko2",

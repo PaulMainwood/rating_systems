@@ -175,11 +175,11 @@ def cmd_backtest(args):
     dataset = GameDataset.from_parquet(args.data)
 
     print(f"Dataset: {dataset}")
-    print(f"Train fraction: {args.train_fraction}")
+    print(f"Train ratio: {args.train_ratio}")
 
     # Determine split day
     days = dataset.days
-    split_idx = int(len(days) * args.train_fraction)
+    split_idx = int(len(days) * args.train_ratio)
     train_end_day = days[split_idx - 1] if split_idx > 0 else days[0]
 
     if args.system == "all":
@@ -280,7 +280,7 @@ def main():
     backtest_parser.add_argument("--system", "-s", default="all",
                                  choices=["elo", "glicko", "glicko2", "stephenson", "all"],
                                  help="System to backtest (default: all)")
-    backtest_parser.add_argument("--train-fraction", "-f", type=float, default=0.7,
+    backtest_parser.add_argument("--train-ratio", "-f", type=float, default=0.7,
                                  help="Fraction of data for training (default: 0.7)")
     backtest_parser.add_argument("--k-factor", "-k", type=float, default=32.0,
                                  help="K-factor for Elo")

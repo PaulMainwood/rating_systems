@@ -236,7 +236,7 @@ class RatingSystemOptimizer:
                 bounds,
                 maxiter=maxiter,
                 polish=True,  # Refine with L-BFGS-B at end
-                disp=False,
+                disp=verbose,
                 seed=42,
                 workers=1,  # Single-threaded for compatibility
                 updating='deferred',
@@ -300,6 +300,7 @@ def optimize_elo(
     scale_bounds: Tuple[float, float] = (200, 600),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
@@ -312,6 +313,7 @@ def optimize_elo(
         scale_bounds: Bounds for scale (logistic parameter)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training (default 0.7)
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
@@ -323,6 +325,7 @@ def optimize_elo(
     optimizer = RatingSystemOptimizer(
         Elo,
         dataset,
+        train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
     )
 
@@ -344,6 +347,7 @@ def optimize_glicko(
     c_bounds: Tuple[float, float] = (20, 100),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
@@ -357,6 +361,7 @@ def optimize_glicko(
         c_bounds: Bounds for c parameter (RD increase per period)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training (default 0.7)
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
@@ -368,6 +373,7 @@ def optimize_glicko(
     optimizer = RatingSystemOptimizer(
         Glicko,
         dataset,
+        train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
     )
 
@@ -389,6 +395,7 @@ def optimize_glicko2(
     tau_bounds: Tuple[float, float] = (0.3, 1.2),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
@@ -402,6 +409,7 @@ def optimize_glicko2(
         tau_bounds: Bounds for tau (system constant)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training (default 0.7)
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
@@ -413,6 +421,7 @@ def optimize_glicko2(
     optimizer = RatingSystemOptimizer(
         Glicko2,
         dataset,
+        train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
     )
 
@@ -436,6 +445,7 @@ def optimize_stephenson(
     lambda_bounds: Tuple[float, float] = (0, 10),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
@@ -450,6 +460,7 @@ def optimize_stephenson(
         lambda_bounds: Bounds for neighbourhood shrinkage parameter
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training (default 0.7)
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
@@ -461,6 +472,7 @@ def optimize_stephenson(
     optimizer = RatingSystemOptimizer(
         Stephenson,
         dataset,
+        train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
     )
 
@@ -507,7 +519,7 @@ def optimize_whr(
         WHR,
         dataset,
         train_ratio=train_ratio,
-        fixed_params={"max_iterations": 1000, "refit_max_iterations": 10},
+        fixed_params={"max_iterations": 1000, "refit_max_iterations": 50},
         max_test_days=max_test_days,
     )
 
@@ -556,8 +568,8 @@ def optimize_ttt(
         dataset,
         train_ratio=train_ratio,
         fixed_params={
-            "max_iterations": 15,
-            "refit_max_iterations": 2,
+            "max_iterations": 1000,
+            "refit_max_iterations": 25,
             "refit_interval": 1,  # Refit daily for accurate evaluation
         },
         max_test_days=max_test_days,
@@ -581,6 +593,7 @@ def optimize_trueskill(
     initial_sigma_bounds: Tuple[float, float] = (5, 12),
     beta_bounds: Tuple[float, float] = (2, 8),
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
@@ -593,6 +606,7 @@ def optimize_trueskill(
         initial_sigma_bounds: Bounds for initial skill uncertainty
         beta_bounds: Bounds for performance variability
         maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training (default 0.7)
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
@@ -604,6 +618,7 @@ def optimize_trueskill(
     optimizer = RatingSystemOptimizer(
         TrueSkill,
         dataset,
+        train_ratio=train_ratio,
         fixed_params={},
     )
 
@@ -625,6 +640,7 @@ def optimize_yuksel(
     alpha_bounds: Tuple[float, float] = (0.5, 5.0),
     scaling_factor_bounds: Tuple[float, float] = (0.5, 1.0),
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
 ) -> OptimizationResult:
@@ -637,6 +653,7 @@ def optimize_yuksel(
         alpha_bounds: Bounds for uncertainty decay factor
         scaling_factor_bounds: Bounds for update scaling factor
         maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training (default 0.7)
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
 
@@ -648,6 +665,7 @@ def optimize_yuksel(
     optimizer = RatingSystemOptimizer(
         Yuksel,
         dataset,
+        train_ratio=train_ratio,
         fixed_params={"initial_rating": 1500.0},
     )
 
@@ -667,6 +685,7 @@ def optimize_all(
     dataset: GameDataset,
     systems: Optional[List[str]] = None,
     maxiter: int = 30,
+    train_ratio: float = 0.7,
     verbose: bool = True,
 ) -> Dict[str, OptimizationResult]:
     """
@@ -678,6 +697,7 @@ def optimize_all(
             ["elo", "glicko", "glicko2", "stephenson", "trueskill", "yuksel", "whr", "ttt"]
             If None, optimizes all.
         maxiter: Maximum optimization iterations per system
+        train_ratio: Fraction of days for initial training (default 0.7)
         verbose: Whether to print progress
 
     Returns:
@@ -712,6 +732,7 @@ def optimize_all(
         results[system] = optimizers[system](
             dataset,
             maxiter=maxiter,
+            train_ratio=train_ratio,
             verbose=verbose,
         )
 
