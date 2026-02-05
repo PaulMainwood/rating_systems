@@ -41,7 +41,7 @@ class TTTConfig:
     max_iterations: int = 30  # Max forward-backward iterations for initial fit
     refit_max_iterations: int = 2  # Max iterations for periodic refits (faster)
     convergence_threshold: float = 1e-6  # Convergence threshold
-    refit_interval: int = 0  # Days between refits (0 = no periodic refit)
+    refit_interval: int = 1  # Days between refits (1 = refit daily)
 
 
 class TrueSkillThroughTime(RatingSystem):
@@ -88,7 +88,7 @@ class TrueSkillThroughTime(RatingSystem):
         max_iterations: int = 30,
         refit_max_iterations: int = 2,
         convergence_threshold: float = 1e-6,
-        refit_interval: int = 0,
+        refit_interval: int = 1,
         num_players: Optional[int] = None,
     ):
         self.config = TTTConfig(
