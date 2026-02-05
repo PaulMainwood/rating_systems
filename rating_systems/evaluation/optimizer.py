@@ -519,7 +519,7 @@ def optimize_whr(
         WHR,
         dataset,
         train_ratio=train_ratio,
-        fixed_params={"max_iterations": 1000, "refit_max_iterations": 50},
+        fixed_params={"max_iterations": 250, "refit_max_iterations": 50},
         max_test_days=max_test_days,
     )
 
@@ -568,7 +568,7 @@ def optimize_ttt(
         dataset,
         train_ratio=train_ratio,
         fixed_params={
-            "max_iterations": 1000,
+            "max_iterations": 125,
             "refit_max_iterations": 25,
             "refit_interval": 1,  # Refit daily for accurate evaluation
         },
