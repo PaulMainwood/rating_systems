@@ -267,7 +267,7 @@ class TrueSkillThroughTime(RatingSystem):
         # Build data structures (sparse)
         self._build_batch_structure(player1, player2, scores, days)
 
-        # Initial forward pass
+        # Initial forward pass (all batches)
         initial_forward_pass_sparse(
             self._num_batches,
             self._batch_offsets,
@@ -296,6 +296,7 @@ class TrueSkillThroughTime(RatingSystem):
             self.config.sigma,
             self.config.beta,
             self.config.gamma,
+            0,  # start_batch
         )
 
         # Run convergence
@@ -464,7 +465,13 @@ class TrueSkillThroughTime(RatingSystem):
         return self
 
     def _refit_from_accumulated(self) -> None:
-        """Refit the model on all accumulated data."""
+        """Refit the model on all accumulated data using warm-start.
+
+        Rebuilds the sparse structure from all data but preserves converged
+        state from previous batches. Only runs the forward pass on new
+        batches, then convergence on the full graph (which converges quickly
+        since most messages are already stable).
+        """
         if not self._accum_p1:
             return
 
@@ -478,10 +485,32 @@ class TrueSkillThroughTime(RatingSystem):
             self._num_players = int(max_player) + 1
             self._ratings = self._initialize_ratings(self._num_players)
 
-        # Build sparse structures
+        # Save old state for warm-start
+        old_num_batches = self._num_batches
+        old_num_appearances = self._num_appearances
+        old_fwd_mu = self._state_forward_mu
+        old_fwd_sigma = self._state_forward_sigma
+        old_bwd_mu = self._state_backward_mu
+        old_bwd_sigma = self._state_backward_sigma
+        old_lik_mu = self._state_likelihood_mu
+        old_lik_sigma = self._state_likelihood_sigma
+
+        # Rebuild sparse structures (allocates fresh arrays)
         self._build_batch_structure(player1, player2, scores, days)
 
-        # Initial forward pass
+        # Restore old state into new arrays for previously-computed appearances.
+        # build_appearance_structure is deterministic: old games in the same
+        # order produce the same appearance indices, so indices 0..old-1 match.
+        if old_fwd_mu is not None and old_num_appearances > 0:
+            n = old_num_appearances
+            self._state_forward_mu[:n] = old_fwd_mu[:n]
+            self._state_forward_sigma[:n] = old_fwd_sigma[:n]
+            self._state_backward_mu[:n] = old_bwd_mu[:n]
+            self._state_backward_sigma[:n] = old_bwd_sigma[:n]
+            self._state_likelihood_mu[:n] = old_lik_mu[:n]
+            self._state_likelihood_sigma[:n] = old_lik_sigma[:n]
+
+        # Forward pass only for new batches (warm-start)
         initial_forward_pass_sparse(
             self._num_batches,
             self._batch_offsets,
@@ -510,9 +539,10 @@ class TrueSkillThroughTime(RatingSystem):
             self.config.sigma,
             self.config.beta,
             self.config.gamma,
+            old_num_batches,  # start_batch: skip already-computed batches
         )
 
-        # Run convergence (fewer iterations for periodic refits)
+        # Run convergence (fewer iterations needed thanks to warm-start)
         self._num_iterations = run_convergence_sparse(
             self._num_batches,
             self._batch_offsets,

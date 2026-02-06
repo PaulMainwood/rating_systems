@@ -394,11 +394,17 @@ def initial_forward_pass_sparse(
     prior_sigma: float,
     beta: float,
     gamma: float,
+    start_batch: int,
 ) -> None:
     """
-    Initial forward pass with sparse state storage.
+    Forward pass with sparse state storage.
+
+    Processes batches from start_batch to num_batches-1. For start_batch=0
+    this is the full initial forward pass. For start_batch>0 (warm-start
+    refits), it only processes new batches, reading forward/likelihood state
+    from previous appearances that were already computed.
     """
-    for b in range(num_batches):
+    for b in range(start_batch, num_batches):
         a_start = app_offsets[b]
         a_end = app_offsets[b + 1]
         batch_time = batch_times[b]
