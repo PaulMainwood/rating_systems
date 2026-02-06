@@ -487,14 +487,15 @@ def backward_sweep_sparse(
     """
     Backward sweep with sparse state. Returns max change for convergence.
 
-    Uses adjacent-batch elapsed time for drift to match the dense implementation's
-    behaviour, where the agent-carried backward message uses t[b+1] - t[b].
+    Uses actual elapsed time between a player's consecutive appearances for
+    drift, which is the correct TTT algorithm per Dangauthier et al.
     """
     max_change = 0.0
 
     for b in range(num_batches - 1, -1, -1):
         a_start = app_offsets[b]
         a_end = app_offsets[b + 1]
+        batch_time = batch_times[b]
 
         # Update backward messages from next appearance
         for a in range(a_start, a_end):
@@ -512,9 +513,9 @@ def backward_sweep_sparse(
                     state_likelihood_mu[next_a], state_likelihood_sigma[next_a],
                     state_backward_mu[next_a], state_backward_sigma[next_a]
                 )
-                # Use adjacent-batch elapsed: t[next_batch] - t[next_batch - 1]
-                next_b = app_batch[next_a]
-                elapsed = batch_times[next_b] - batch_times[next_b - 1] if next_b > 0 else 0.0
+                # Actual elapsed between this appearance and the next
+                next_time = batch_times[app_batch[next_a]]
+                elapsed = next_time - batch_time
                 bwd_mu, bwd_sigma = gaussian_forget(lik_bwd_mu, lik_bwd_sigma, gamma, elapsed)
                 state_backward_mu[a] = bwd_mu
                 state_backward_sigma[a] = bwd_sigma
@@ -584,14 +585,15 @@ def forward_sweep_sparse(
     """
     Forward sweep with sparse state. Returns max change for convergence.
 
-    Uses adjacent-batch elapsed time for drift to match the dense implementation's
-    behaviour, where the agent-carried forward message uses t[b] - t[b-1].
+    Uses actual elapsed time between a player's consecutive appearances for
+    drift, which is the correct TTT algorithm per Dangauthier et al.
     """
     max_change = 0.0
 
     for b in range(num_batches):
         a_start = app_offsets[b]
         a_end = app_offsets[b + 1]
+        batch_time = batch_times[b]
 
         # Update forward messages from previous appearance
         for a in range(a_start, a_end):
@@ -608,8 +610,9 @@ def forward_sweep_sparse(
                     state_forward_mu[prev_a], state_forward_sigma[prev_a],
                     state_likelihood_mu[prev_a], state_likelihood_sigma[prev_a]
                 )
-                # Use adjacent-batch elapsed: t[b] - t[b-1]
-                elapsed = batch_times[b] - batch_times[b - 1] if b > 0 else 0.0
+                # Actual elapsed between previous appearance and this one
+                prev_time = batch_times[app_batch[prev_a]]
+                elapsed = batch_time - prev_time
                 fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma, elapsed)
                 state_forward_mu[a] = fwd_mu
                 state_forward_sigma[a] = fwd_sigma
