@@ -1,15 +1,13 @@
 """
-TrueSkill Through Time (TTT) - Numba implementation following reference structure.
+TrueSkill Through Time (TTT) - Numba implementation with sparse state storage.
 
 Based on:
 - Dangauthier et al., "TrueSkill Through Time: Revisiting the History of Chess" (2007)
 - Glandfried's Python implementation: https://github.com/glandfried/TrueSkillThroughTime.py
 
-This implementation follows the exact algorithm structure of the reference:
-1. Initial forward pass: create batches sequentially, propagate forward messages
-2. Convergence loop: backward sweep then forward sweep, updating likelihoods at each batch
-
-Data is organized by batches (time steps) rather than player-days.
+Uses sparse appearance-based state storage instead of dense (batches × players)
+arrays. Memory scales with actual player appearances (~500K) rather than the
+dense product (~119M), giving ~240x memory reduction.
 """
 
 from dataclasses import dataclass
@@ -21,9 +19,10 @@ from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameBatch, GameDataset
 from ...results.fitted_ratings import FittedTTTRatings
 from ._numba_core import (
-    initial_forward_pass,
-    run_convergence,
-    extract_final_ratings,
+    build_appearance_structure,
+    initial_forward_pass_sparse,
+    run_convergence_sparse,
+    extract_final_ratings_sparse,
     predict_proba_batch,
     predict_single,
     INF_SIGMA,
@@ -48,15 +47,8 @@ class TrueSkillThroughTime(RatingSystem):
     """
     TrueSkill Through Time rating system.
 
-    This implementation follows the exact structure of the reference implementation
-    by Gustavo Landfried, with Numba optimization for speed.
-
-    TTT models player skill as a Gaussian that evolves over time:
-    - Skill at time t: N(μ_t, σ_t²)
-    - Skill drift: σ increases by γ√t per time unit
-    - Game outcomes update beliefs via Gaussian message passing
-
-    Uses forward-backward belief propagation for globally consistent estimates.
+    Uses forward-backward belief propagation with sparse state storage
+    for globally consistent player skill estimates over time.
 
     Parameters:
         mu: Prior mean skill (default: 0.0, displayed as 1500)
@@ -102,7 +94,7 @@ class TrueSkillThroughTime(RatingSystem):
             refit_interval=refit_interval,
         )
 
-        # Data arrays
+        # Game data arrays
         self._num_batches = 0
         self._batch_offsets: Optional[np.ndarray] = None
         self._batch_times: Optional[np.ndarray] = None
@@ -110,7 +102,16 @@ class TrueSkillThroughTime(RatingSystem):
         self._game_p2: Optional[np.ndarray] = None
         self._game_scores: Optional[np.ndarray] = None
 
-        # State arrays (num_batches * num_players)
+        # Sparse appearance structures
+        self._num_appearances = 0
+        self._app_offsets: Optional[np.ndarray] = None
+        self._app_player: Optional[np.ndarray] = None
+        self._app_prev: Optional[np.ndarray] = None
+        self._app_next: Optional[np.ndarray] = None
+        self._app_batch: Optional[np.ndarray] = None
+        self._player_last_app: Optional[np.ndarray] = None
+
+        # Sparse state arrays (indexed by appearance, not batch*player)
         self._state_forward_mu: Optional[np.ndarray] = None
         self._state_forward_sigma: Optional[np.ndarray] = None
         self._state_backward_mu: Optional[np.ndarray] = None
@@ -118,11 +119,13 @@ class TrueSkillThroughTime(RatingSystem):
         self._state_likelihood_mu: Optional[np.ndarray] = None
         self._state_likelihood_sigma: Optional[np.ndarray] = None
 
-        # Agent state (per player)
-        self._agent_message_mu: Optional[np.ndarray] = None
-        self._agent_message_sigma: Optional[np.ndarray] = None
-        self._agent_last_time: Optional[np.ndarray] = None
-        self._player_last_batch: Optional[np.ndarray] = None
+        # Pre-allocated temp arrays (size num_players, reused across sweeps)
+        self._temp_fwd_mu: Optional[np.ndarray] = None
+        self._temp_fwd_sigma: Optional[np.ndarray] = None
+        self._temp_bwd_mu: Optional[np.ndarray] = None
+        self._temp_bwd_sigma: Optional[np.ndarray] = None
+        self._temp_lik_mu: Optional[np.ndarray] = None
+        self._temp_lik_sigma: Optional[np.ndarray] = None
 
         # Metadata
         self._num_games_fitted = 0
@@ -146,6 +149,16 @@ class TrueSkillThroughTime(RatingSystem):
             metadata={"system": "ttt", "config": self.config},
         )
 
+    def _ensure_temp_arrays(self) -> None:
+        """Ensure temp arrays are allocated at the right size."""
+        if self._temp_fwd_mu is None or len(self._temp_fwd_mu) < self._num_players:
+            self._temp_fwd_mu = np.zeros(self._num_players, dtype=np.float64)
+            self._temp_fwd_sigma = np.full(self._num_players, INF_SIGMA, dtype=np.float64)
+            self._temp_bwd_mu = np.zeros(self._num_players, dtype=np.float64)
+            self._temp_bwd_sigma = np.full(self._num_players, INF_SIGMA, dtype=np.float64)
+            self._temp_lik_mu = np.zeros(self._num_players, dtype=np.float64)
+            self._temp_lik_sigma = np.full(self._num_players, INF_SIGMA, dtype=np.float64)
+
     def _build_batch_structure(
         self,
         player1: np.ndarray,
@@ -154,9 +167,7 @@ class TrueSkillThroughTime(RatingSystem):
         days: np.ndarray,
     ) -> None:
         """
-        Build batch data structures from game arrays.
-
-        Organizes games by day (batch), sorted chronologically.
+        Build batch and sparse appearance structures from game arrays.
         """
         n_games = len(player1)
 
@@ -164,10 +175,8 @@ class TrueSkillThroughTime(RatingSystem):
         unique_days = np.unique(days)
         self._num_batches = len(unique_days)
 
-        # Create day -> batch index mapping
         day_to_batch = {int(d): i for i, d in enumerate(unique_days)}
 
-        # Sort games by day
         sort_order = np.argsort(days)
         self._game_p1 = player1[sort_order].astype(np.int64)
         self._game_p2 = player2[sort_order].astype(np.int64)
@@ -188,20 +197,30 @@ class TrueSkillThroughTime(RatingSystem):
                 current_batch = batch_idx
         self._batch_offsets[self._num_batches] = n_games
 
-        # Initialize state arrays
-        total_state = self._num_batches * self._num_players
-        self._state_forward_mu = np.zeros(total_state, dtype=np.float64)
-        self._state_forward_sigma = np.full(total_state, INF_SIGMA, dtype=np.float64)
-        self._state_backward_mu = np.zeros(total_state, dtype=np.float64)
-        self._state_backward_sigma = np.full(total_state, INF_SIGMA, dtype=np.float64)
-        self._state_likelihood_mu = np.zeros(total_state, dtype=np.float64)
-        self._state_likelihood_sigma = np.full(total_state, INF_SIGMA, dtype=np.float64)
+        # Build sparse appearance structure
+        (self._app_offsets, self._app_player, self._app_prev,
+         self._app_next, self._app_batch, self._player_last_app) = \
+            build_appearance_structure(
+                self._num_batches,
+                self._batch_offsets,
+                self._game_p1,
+                self._game_p2,
+                self._num_players,
+            )
 
-        # Initialize agent state
-        self._agent_message_mu = np.zeros(self._num_players, dtype=np.float64)
-        self._agent_message_sigma = np.full(self._num_players, INF_SIGMA, dtype=np.float64)
-        self._agent_last_time = np.full(self._num_players, -1e10, dtype=np.float64)
-        self._player_last_batch = np.full(self._num_players, -1, dtype=np.int64)
+        self._num_appearances = len(self._app_player)
+
+        # Allocate sparse state arrays
+        na = self._num_appearances
+        self._state_forward_mu = np.zeros(na, dtype=np.float64)
+        self._state_forward_sigma = np.full(na, INF_SIGMA, dtype=np.float64)
+        self._state_backward_mu = np.zeros(na, dtype=np.float64)
+        self._state_backward_sigma = np.full(na, INF_SIGMA, dtype=np.float64)
+        self._state_likelihood_mu = np.zeros(na, dtype=np.float64)
+        self._state_likelihood_sigma = np.full(na, INF_SIGMA, dtype=np.float64)
+
+        # Ensure temp arrays
+        self._ensure_temp_arrays()
 
     def fit(
         self,
@@ -245,11 +264,11 @@ class TrueSkillThroughTime(RatingSystem):
             end = day_offsets[d + 1]
             days[start:end] = day_indices[d]
 
-        # Build data structures
+        # Build data structures (sparse)
         self._build_batch_structure(player1, player2, scores, days)
 
         # Initial forward pass
-        initial_forward_pass(
+        initial_forward_pass_sparse(
             self._num_batches,
             self._batch_offsets,
             self._batch_times,
@@ -257,15 +276,22 @@ class TrueSkillThroughTime(RatingSystem):
             self._game_p2,
             self._game_scores,
             self._num_players,
+            self._app_offsets,
+            self._app_player,
+            self._app_prev,
+            self._app_batch,
             self._state_forward_mu,
             self._state_forward_sigma,
             self._state_backward_mu,
             self._state_backward_sigma,
             self._state_likelihood_mu,
             self._state_likelihood_sigma,
-            self._agent_message_mu,
-            self._agent_message_sigma,
-            self._agent_last_time,
+            self._temp_fwd_mu,
+            self._temp_fwd_sigma,
+            self._temp_bwd_mu,
+            self._temp_bwd_sigma,
+            self._temp_lik_mu,
+            self._temp_lik_sigma,
             self.config.mu,
             self.config.sigma,
             self.config.beta,
@@ -273,7 +299,7 @@ class TrueSkillThroughTime(RatingSystem):
         )
 
         # Run convergence
-        self._num_iterations = run_convergence(
+        self._num_iterations = run_convergence_sparse(
             self._num_batches,
             self._batch_offsets,
             self._batch_times,
@@ -281,14 +307,23 @@ class TrueSkillThroughTime(RatingSystem):
             self._game_p2,
             self._game_scores,
             self._num_players,
+            self._app_offsets,
+            self._app_player,
+            self._app_prev,
+            self._app_next,
+            self._app_batch,
             self._state_forward_mu,
             self._state_forward_sigma,
             self._state_backward_mu,
             self._state_backward_sigma,
             self._state_likelihood_mu,
             self._state_likelihood_sigma,
-            self._agent_message_mu,
-            self._agent_message_sigma,
+            self._temp_fwd_mu,
+            self._temp_fwd_sigma,
+            self._temp_bwd_mu,
+            self._temp_bwd_sigma,
+            self._temp_lik_mu,
+            self._temp_lik_sigma,
             self.config.mu,
             self.config.sigma,
             self.config.beta,
@@ -301,19 +336,15 @@ class TrueSkillThroughTime(RatingSystem):
         ratings = np.empty(self._num_players, dtype=np.float64)
         rd = np.empty(self._num_players, dtype=np.float64)
 
-        extract_final_ratings(
-            self._num_batches,
-            self._batch_offsets,
-            self._game_p1,
-            self._game_p2,
+        extract_final_ratings_sparse(
             self._num_players,
+            self._player_last_app,
             self._state_forward_mu,
             self._state_forward_sigma,
             self._state_backward_mu,
             self._state_backward_sigma,
             self._state_likelihood_mu,
             self._state_likelihood_sigma,
-            self._player_last_batch,
             ratings,
             rd,
             self.config.mu,
@@ -349,18 +380,10 @@ class TrueSkillThroughTime(RatingSystem):
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.
-
-        Args:
-            player1: Single player ID or array of player IDs
-            player2: Single player ID or array of player IDs
-
-        Returns:
-            Single probability or array of probabilities
         """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
 
-        # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
             return predict_single(
                 self._ratings.ratings[int(player1)],
@@ -372,7 +395,6 @@ class TrueSkillThroughTime(RatingSystem):
                 self.DISPLAY_OFFSET,
             )
 
-        # Batch prediction
         p1 = np.ascontiguousarray(player1, dtype=np.int64)
         p2 = np.ascontiguousarray(player2, dtype=np.int64)
         return predict_proba_batch(
@@ -401,36 +423,24 @@ class TrueSkillThroughTime(RatingSystem):
             num_iterations=self._num_iterations,
             last_day=self._current_day,
             player_names=self._player_names,
-            rating_history={},  # Simplified - no history tracking for now
+            rating_history={},
         )
 
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
         """Update ratings with a new batch - for TTT this is a no-op.
-
         TTT is a batch algorithm that requires full refit for updates.
-        In backtest mode, we skip updates and use static ratings from training.
         """
-        # TTT is a batch algorithm - skip incremental updates
-        # This means backtest predictions use static ratings from initial fit
         pass
 
     def update(self, batch: GameBatch) -> "TrueSkillThroughTime":
         """
         Incrementally update ratings with a new batch of games.
 
-        For TTT (a batch system), this accumulates data and refits periodically
-        based on refit_interval. If refit_interval=0, this is a no-op.
-
-        Args:
-            batch: New games to incorporate
-
-        Returns:
-            self (for method chaining)
+        Accumulates data and refits periodically based on refit_interval.
         """
         if not self._fitted:
             raise ValueError("Model must be fitted before updating. Call fit() first.")
 
-        # If no periodic refit configured, skip
         if self.config.refit_interval <= 0:
             return self
 
@@ -458,23 +468,21 @@ class TrueSkillThroughTime(RatingSystem):
         if not self._accum_p1:
             return
 
-        # Concatenate all accumulated data
         player1 = np.concatenate(self._accum_p1)
         player2 = np.concatenate(self._accum_p2)
         scores = np.concatenate(self._accum_scores)
         days = np.concatenate(self._accum_days)
 
-        # Expand player capacity if needed
         max_player = max(player1.max(), player2.max())
         if self._num_players is None or max_player >= self._num_players:
             self._num_players = int(max_player) + 1
             self._ratings = self._initialize_ratings(self._num_players)
 
-        # Build data structures
+        # Build sparse structures
         self._build_batch_structure(player1, player2, scores, days)
 
         # Initial forward pass
-        initial_forward_pass(
+        initial_forward_pass_sparse(
             self._num_batches,
             self._batch_offsets,
             self._batch_times,
@@ -482,23 +490,30 @@ class TrueSkillThroughTime(RatingSystem):
             self._game_p2,
             self._game_scores,
             self._num_players,
+            self._app_offsets,
+            self._app_player,
+            self._app_prev,
+            self._app_batch,
             self._state_forward_mu,
             self._state_forward_sigma,
             self._state_backward_mu,
             self._state_backward_sigma,
             self._state_likelihood_mu,
             self._state_likelihood_sigma,
-            self._agent_message_mu,
-            self._agent_message_sigma,
-            self._agent_last_time,
+            self._temp_fwd_mu,
+            self._temp_fwd_sigma,
+            self._temp_bwd_mu,
+            self._temp_bwd_sigma,
+            self._temp_lik_mu,
+            self._temp_lik_sigma,
             self.config.mu,
             self.config.sigma,
             self.config.beta,
             self.config.gamma,
         )
 
-        # Run convergence (use fewer iterations for periodic refits)
-        self._num_iterations = run_convergence(
+        # Run convergence (fewer iterations for periodic refits)
+        self._num_iterations = run_convergence_sparse(
             self._num_batches,
             self._batch_offsets,
             self._batch_times,
@@ -506,14 +521,23 @@ class TrueSkillThroughTime(RatingSystem):
             self._game_p2,
             self._game_scores,
             self._num_players,
+            self._app_offsets,
+            self._app_player,
+            self._app_prev,
+            self._app_next,
+            self._app_batch,
             self._state_forward_mu,
             self._state_forward_sigma,
             self._state_backward_mu,
             self._state_backward_sigma,
             self._state_likelihood_mu,
             self._state_likelihood_sigma,
-            self._agent_message_mu,
-            self._agent_message_sigma,
+            self._temp_fwd_mu,
+            self._temp_fwd_sigma,
+            self._temp_bwd_mu,
+            self._temp_bwd_sigma,
+            self._temp_lik_mu,
+            self._temp_lik_sigma,
             self.config.mu,
             self.config.sigma,
             self.config.beta,
@@ -526,19 +550,15 @@ class TrueSkillThroughTime(RatingSystem):
         ratings = np.empty(self._num_players, dtype=np.float64)
         rd = np.empty(self._num_players, dtype=np.float64)
 
-        extract_final_ratings(
-            self._num_batches,
-            self._batch_offsets,
-            self._game_p1,
-            self._game_p2,
+        extract_final_ratings_sparse(
             self._num_players,
+            self._player_last_app,
             self._state_forward_mu,
             self._state_forward_sigma,
             self._state_backward_mu,
             self._state_backward_sigma,
             self._state_likelihood_mu,
             self._state_likelihood_sigma,
-            self._player_last_batch,
             ratings,
             rd,
             self.config.mu,
@@ -563,19 +583,27 @@ class TrueSkillThroughTime(RatingSystem):
         self._game_p1 = None
         self._game_p2 = None
         self._game_scores = None
+        self._num_appearances = 0
+        self._app_offsets = None
+        self._app_player = None
+        self._app_prev = None
+        self._app_next = None
+        self._app_batch = None
+        self._player_last_app = None
         self._state_forward_mu = None
         self._state_forward_sigma = None
         self._state_backward_mu = None
         self._state_backward_sigma = None
         self._state_likelihood_mu = None
         self._state_likelihood_sigma = None
-        self._agent_message_mu = None
-        self._agent_message_sigma = None
-        self._agent_last_time = None
-        self._player_last_batch = None
+        self._temp_fwd_mu = None
+        self._temp_fwd_sigma = None
+        self._temp_bwd_mu = None
+        self._temp_bwd_sigma = None
+        self._temp_lik_mu = None
+        self._temp_lik_sigma = None
         self._num_games_fitted = 0
         self._num_iterations = 0
-        # Clear accumulated data
         self._accum_p1 = []
         self._accum_p2 = []
         self._accum_scores = []
@@ -586,8 +614,9 @@ class TrueSkillThroughTime(RatingSystem):
     def __repr__(self) -> str:
         status = "fitted" if self._fitted else "not fitted"
         players = self._num_players or "?"
+        apps = self._num_appearances or 0
         return (
             f"TrueSkillThroughTime(sigma={self.config.sigma:.2f}, "
             f"beta={self.config.beta:.2f}, gamma={self.config.gamma:.3f}, "
-            f"players={players}, {status})"
+            f"players={players}, appearances={apps}, {status})"
         )
