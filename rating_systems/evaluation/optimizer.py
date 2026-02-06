@@ -225,6 +225,8 @@ class RatingSystemOptimizer:
                 test_days = len([d for d in self.dataset.days
                                 if self.train_end_day < d <= self.test_end_day])
                 print(f"Test period limited to: {test_days} days (ending day {self.test_end_day})")
+            if self.fixed_params:
+                print(f"Fixed params: {self.fixed_params}")
             print(f"Dataset: {self.dataset.num_games:,} games, "
                   f"{self.dataset.num_players:,} players")
             print(f"{'='*60}\n")
