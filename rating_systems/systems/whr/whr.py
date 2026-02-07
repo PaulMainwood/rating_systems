@@ -34,6 +34,7 @@ from ._numba_core import (
     predict_proba_batch,
     predict_single,
     run_all_iterations,
+    warm_start_ratings,
 )
 
 
@@ -48,6 +49,7 @@ class WHRConfig:
     refit_max_iterations: int = None  # Max iterations for refits (default: same as max_iterations)
     refit_interval: int = 1  # Days between refits during walk-forward (1 = every day)
     convergence_threshold: float = 1e-6  # Convergence threshold
+    warm_start: bool = True  # Use previous solution as starting point for refits
 
     def __post_init__(self):
         if self.refit_max_iterations is None:
@@ -98,6 +100,7 @@ class WHR(RatingSystem):
         refit_max_iterations: Optional[int] = None,
         refit_interval: int = 1,
         convergence_threshold: float = 1e-6,
+        warm_start: bool = True,
         num_players: Optional[int] = None,
     ):
         self.config = WHRConfig(
@@ -108,6 +111,7 @@ class WHR(RatingSystem):
             refit_max_iterations=refit_max_iterations,
             refit_interval=refit_interval,
             convergence_threshold=convergence_threshold,
+            warm_start=warm_start,
         )
 
         # w2 in log-gamma scale
@@ -315,6 +319,20 @@ class WHR(RatingSystem):
         if max_iterations is None:
             max_iterations = self.config.refit_max_iterations
 
+        # Save old state for warm start
+        old_pd_r = None
+        old_player_offsets = None
+        old_pd_days = None
+        if (
+            self.config.warm_start
+            and self._pd_r is not None
+            and self._player_offsets is not None
+            and self._pd_days is not None
+        ):
+            old_pd_r = self._pd_r
+            old_player_offsets = self._player_offsets
+            old_pd_days = self._pd_days
+
         self._build_data_structures(
             self._stored_player1,
             self._stored_player2,
@@ -322,6 +340,19 @@ class WHR(RatingSystem):
             self._stored_days,
             self._num_players,
         )
+
+        # Apply warm start: transfer old converged ratings to new structure
+        if old_pd_r is not None:
+            warm_start_ratings(
+                self._num_players,
+                old_player_offsets,
+                old_pd_days,
+                old_pd_r,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+            )
+
         self._run_optimization(max_iterations)
         self._extract_current_ratings()
         self._num_games_fitted = len(self._stored_player1)
@@ -517,5 +548,6 @@ class WHR(RatingSystem):
         return (
             f"WHR(w2={self.config.w2}, "
             f"max_iterations={self.config.max_iterations}, "
+            f"warm_start={self.config.warm_start}, "
             f"players={players}, {status})"
         )

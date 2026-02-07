@@ -489,6 +489,64 @@ def predict_proba_at_day(
 
 
 @njit(cache=True)
+def warm_start_ratings(
+    num_players: int,
+    old_player_offsets: np.ndarray,
+    old_pd_days: np.ndarray,
+    old_pd_r: np.ndarray,
+    new_player_offsets: np.ndarray,
+    new_pd_days: np.ndarray,
+    new_pd_r: np.ndarray,
+) -> None:
+    """
+    Transfer converged ratings from old data structures to new ones.
+
+    For each player, uses a two-pointer merge on sorted day arrays to:
+    - Copy exact (player, day) matches from old to new
+    - Extrapolate new player-days from the nearest prior rating
+
+    This provides an excellent starting point for Newton-Raphson,
+    dramatically reducing the iterations needed for convergence
+    when refitting with slightly more data (e.g. walk-forward backtesting).
+    """
+    for player_id in range(num_players):
+        old_start = old_player_offsets[player_id]
+        old_end = old_player_offsets[player_id + 1]
+        new_start = new_player_offsets[player_id]
+        new_end = new_player_offsets[player_id + 1]
+
+        old_n = old_end - old_start
+        new_n = new_end - new_start
+
+        if old_n == 0 or new_n == 0:
+            continue
+
+        # Two-pointer merge on sorted day arrays
+        old_i = 0
+        new_i = 0
+        last_known_r = old_pd_r[old_start]  # fallback for days before any old day
+
+        while new_i < new_n:
+            new_day = new_pd_days[new_start + new_i]
+
+            # Advance old pointer past days before current new day
+            while old_i < old_n and old_pd_days[old_start + old_i] < new_day:
+                last_known_r = old_pd_r[old_start + old_i]
+                old_i += 1
+
+            if old_i < old_n and old_pd_days[old_start + old_i] == new_day:
+                # Exact match: copy old converged rating
+                new_pd_r[new_start + new_i] = old_pd_r[old_start + old_i]
+                last_known_r = old_pd_r[old_start + old_i]
+                old_i += 1
+            else:
+                # New day: extrapolate from most recent prior rating
+                new_pd_r[new_start + new_i] = last_known_r
+
+            new_i += 1
+
+
+@njit(cache=True)
 def fill_game_arrays(
     n_games: int,
     pd1_indices: np.ndarray,
