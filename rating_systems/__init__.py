@@ -73,6 +73,23 @@ from .systems import (
     SURFACE_GRASS,
     SURFACE_NON_CLAY,
     SURFACE_NAMES,
+    # Weighted TTT
+    WeightedTTT,
+    WTTTConfig,
+    # Weighted Glicko / Glicko-2
+    WGlicko,
+    WGlickoConfig,
+    WGlicko2,
+    WGlicko2Config,
+    # Weighted WHR
+    WeightedWHR,
+    WWHRConfig,
+    # Weighted Stephenson
+    WStephenson,
+    WStephensonConfig,
+    # Weighted Yuksel
+    WYuksel,
+    WYukselConfig,
 )
 from .results import FittedEloRatings, FittedGlickoRatings, FittedTrueSkillRatings, FittedYukselRatings
 from .evaluation import (
@@ -115,6 +132,18 @@ __all__ = [
     "WHR",
     "TrueSkillThroughTime",
     "SurfaceTTT",
+    "WeightedTTT",
+    "WTTTConfig",
+    "WGlicko",
+    "WGlickoConfig",
+    "WGlicko2",
+    "WGlicko2Config",
+    "WeightedWHR",
+    "WWHRConfig",
+    "WStephenson",
+    "WStephensonConfig",
+    "WYuksel",
+    "WYukselConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",

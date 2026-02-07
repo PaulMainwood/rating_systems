@@ -35,6 +35,12 @@ from .trueskill_through_time import (
     SURFACE_NON_CLAY,
     SURFACE_NAMES,
 )
+from .wttt import WeightedTTT, WTTTConfig
+from .wglicko import WGlicko, WGlickoConfig
+from .wglicko2 import WGlicko2, WGlicko2Config
+from .wwhr import WeightedWHR, WWHRConfig
+from .wstephenson import WStephenson, WStephensonConfig
+from .wyuksel import WYuksel, WYukselConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -63,4 +69,21 @@ __all__ = [
     # Surface constants (internal)
     "SURFACE_NON_CLAY",
     "SURFACE_NAMES",
+    # Weighted TTT
+    "WeightedTTT",
+    "WTTTConfig",
+    # Weighted Glicko / Glicko-2
+    "WGlicko",
+    "WGlickoConfig",
+    "WGlicko2",
+    "WGlicko2Config",
+    # Weighted WHR
+    "WeightedWHR",
+    "WWHRConfig",
+    # Weighted Stephenson
+    "WStephenson",
+    "WStephensonConfig",
+    # Weighted Yuksel
+    "WYuksel",
+    "WYukselConfig",
 ]

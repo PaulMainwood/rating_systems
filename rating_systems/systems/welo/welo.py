@@ -1,15 +1,17 @@
 """
-Weighted Elo (WElo) rating system - Elo with per-game weights.
+Weighted Elo (WElo) rating system - Elo with per-game weights and handicaps.
 
 The update rule is:
+    expected = sigmoid((r1 - r2 + handicap) * log10/scale)
     delta = K * w * (score - expected)
 
-where w is a per-game weight. When w=1 for all games, this is identical
-to standard Elo. Weights < 1 reduce the rating impact of a game.
+where w is a per-game weight and handicap is a per-game advantage for
+player 1 (in Elo points). When w=1 and handicap=0 for all games, this
+is identical to standard Elo.
 
 This is a general-purpose weighted Elo. It knows nothing about surfaces
-or any other domain-specific concept - it simply accepts a weight for
-each game.
+or any other domain-specific concept - it simply accepts a weight and
+handicap for each game.
 """
 
 from dataclasses import dataclass
@@ -86,29 +88,39 @@ class WElo(RatingSystem):
         )
 
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
-        """Update ratings with uniform weights (standard Elo behaviour)."""
+        """Update ratings with uniform weights and no handicaps (standard Elo behaviour)."""
         if len(batch) == 0:
             return
 
-        weights = np.ones(len(batch), dtype=np.float64)
+        n = len(batch)
+        weights = np.ones(n, dtype=np.float64)
+        handicaps = np.zeros(n, dtype=np.float64)
         update_ratings_weighted_sequential(
             batch.player1,
             batch.player2,
             batch.scores,
             weights,
+            handicaps,
             ratings.ratings,
             self.config.k_factor,
             self.config.scale,
         )
-        self._num_games_fitted += len(batch)
+        self._num_games_fitted += n
 
-    def update_weighted(self, batch: GameBatch, weights: np.ndarray) -> "WElo":
+    def update_weighted(
+        self,
+        batch: GameBatch,
+        weights: np.ndarray,
+        handicaps: Optional[np.ndarray] = None,
+    ) -> "WElo":
         """
-        Incrementally update ratings with per-game weights.
+        Incrementally update ratings with per-game weights and handicaps.
 
         Args:
             batch: Games to process
             weights: Per-game weights array (same length as batch)
+            handicaps: Per-game handicap for player 1 in Elo points.
+                       Positive = player 1 advantage. If None, all zero.
 
         Returns:
             self (for method chaining)
@@ -119,17 +131,23 @@ class WElo(RatingSystem):
         if len(batch) == 0:
             return self
 
+        n = len(batch)
         weights = np.ascontiguousarray(weights, dtype=np.float64)
+        if handicaps is None:
+            h = np.zeros(n, dtype=np.float64)
+        else:
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
         update_ratings_weighted_sequential(
             batch.player1,
             batch.player2,
             batch.scores,
             weights,
+            h,
             self._ratings.ratings,
             self.config.k_factor,
             self.config.scale,
         )
-        self._num_games_fitted += len(batch)
+        self._num_games_fitted += n
         self._current_day = batch.day
         return self
 
@@ -137,15 +155,17 @@ class WElo(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        handicaps: Optional[Union[float, np.ndarray]] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.
 
-        Prediction is identical to standard Elo - weights only affect updates.
-
         Args:
             player1: Single player ID or array of player IDs
             player2: Single player ID or array of player IDs
+            handicaps: Per-game handicap for player 1 in Elo points.
+                       Single float for single prediction, array for batch.
+                       Positive = player 1 advantage. If None, all zero.
 
         Returns:
             Single probability or array of probabilities
@@ -154,25 +174,32 @@ class WElo(RatingSystem):
             raise ValueError("Model not fitted. Call fit() first.")
 
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
+            h = 0.0 if handicaps is None else float(handicaps)
             return predict_single(
                 self._ratings.ratings[int(player1)],
                 self._ratings.ratings[int(player2)],
                 self.config.scale,
+                h,
             )
 
         p1 = np.ascontiguousarray(player1, dtype=np.int64)
         p2 = np.ascontiguousarray(player2, dtype=np.int64)
-        return predict_proba_batch(p1, p2, self._ratings.ratings, self.config.scale)
+        if handicaps is None:
+            h = np.zeros(len(p1), dtype=np.float64)
+        else:
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+        return predict_proba_batch(p1, p2, self._ratings.ratings, self.config.scale, h)
 
     def fit(
         self,
         dataset: GameDataset,
         weights: Optional[np.ndarray] = None,
+        handicaps: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "WElo":
         """
-        Fit the rating system on a dataset with optional per-game weights.
+        Fit the rating system on a dataset with optional per-game weights and handicaps.
 
         Uses optimised single Numba call to process all days without
         Python iteration overhead.
@@ -182,6 +209,8 @@ class WElo(RatingSystem):
             weights: Per-game weights array. Must match the number of games
                      in the dataset (after any end_day filtering). If None,
                      all weights default to 1.0.
+            handicaps: Per-game handicap for player 1 in Elo points.
+                       Positive = player 1 advantage. If None, all zero.
             end_day: Last day to include (inclusive). Cannot be used together
                      with weights - pre-filter the dataset instead.
             player_names: Optional mapping of player_id -> name
@@ -209,22 +238,29 @@ class WElo(RatingSystem):
         player1, player2, scores, day_indices, day_offsets = dataset.get_batched_arrays()
 
         if player1 is not None and len(player1) > 0:
+            n = len(player1)
             if weights is None:
-                w = np.ones(len(player1), dtype=np.float64)
+                w = np.ones(n, dtype=np.float64)
             else:
                 w = np.ascontiguousarray(weights, dtype=np.float64)
+
+            if handicaps is None:
+                h = np.zeros(n, dtype=np.float64)
+            else:
+                h = np.ascontiguousarray(handicaps, dtype=np.float64)
 
             fit_all_days_weighted(
                 player1,
                 player2,
                 scores,
                 w,
+                h,
                 day_offsets,
                 self._ratings.ratings,
                 self.config.k_factor,
                 self.config.scale,
             )
-            self._num_games_fitted = len(player1)
+            self._num_games_fitted = n
             self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
         else:
             self._num_games_fitted = 0
