@@ -34,6 +34,7 @@ from ._numba_core import (
     predict_proba_batch,
     predict_single,
     run_all_iterations,
+    run_all_iterations_accelerated,
     warm_start_ratings,
 )
 
@@ -46,10 +47,12 @@ class WHRConfig:
     initial_rating: float = 1500.0  # Initial Elo-scale rating
     initial_rd: float = 350.0  # Initial rating deviation (uncertainty)
     max_iterations: int = 50  # Maximum Newton-Raphson iterations for initial fit
-    refit_max_iterations: int = None  # Max iterations for refits (default: same as max_iterations)
+    refit_max_iterations: int = 5  # Max iterations for refits
     refit_interval: int = 1  # Days between refits during walk-forward (1 = every day)
     convergence_threshold: float = 1e-6  # Convergence threshold
     warm_start: bool = True  # Use previous solution as starting point for refits
+    use_active_set: bool = True  # Skip converged players during iteration
+    anderson_window: int = 5  # Anderson acceleration window (0 = disabled)
 
     def __post_init__(self):
         if self.refit_max_iterations is None:
@@ -97,10 +100,12 @@ class WHR(RatingSystem):
         initial_rating: float = 1500.0,
         initial_rd: float = 350.0,
         max_iterations: int = 50,
-        refit_max_iterations: Optional[int] = None,
+        refit_max_iterations: int = 5,
         refit_interval: int = 1,
         convergence_threshold: float = 1e-6,
         warm_start: bool = True,
+        use_active_set: bool = True,
+        anderson_window: int = 5,
         num_players: Optional[int] = None,
     ):
         self.config = WHRConfig(
@@ -112,6 +117,8 @@ class WHR(RatingSystem):
             refit_interval=refit_interval,
             convergence_threshold=convergence_threshold,
             warm_start=warm_start,
+            use_active_set=use_active_set,
+            anderson_window=anderson_window,
         )
 
         # w2 in log-gamma scale
@@ -125,6 +132,7 @@ class WHR(RatingSystem):
         self._pd_game_offsets: Optional[np.ndarray] = None  # [total_player_days + 1]
         self._pd_game_opp_pd: Optional[np.ndarray] = None  # [total_games * 2]
         self._pd_game_score: Optional[np.ndarray] = None  # [total_games * 2]
+        self._pd_to_player: Optional[np.ndarray] = None  # [total_player_days]
 
         # Metadata
         self._num_games_fitted = 0
@@ -167,29 +175,35 @@ class WHR(RatingSystem):
         """
         n_games = len(player1)
 
-        # Step 1: Get all (player, day) pairs from both sides of each game
-        # Stack into 2D array and find unique pairs
-        pairs_p1 = np.column_stack([player1, days])
-        pairs_p2 = np.column_stack([player2, days])
-        all_pairs = np.vstack([pairs_p1, pairs_p2])
+        # Step 1: Get all (player, day) pairs via composite key
+        # Composite key = player * max_day_p1 + day preserves lexicographic order
+        max_day_p1 = int(days.max()) + 1
+        all_keys = np.concatenate([
+            player1.astype(np.int64) * max_day_p1 + days.astype(np.int64),
+            player2.astype(np.int64) * max_day_p1 + days.astype(np.int64),
+        ])
 
-        # np.unique sorts by first column (player), then second (day)
-        # and returns inverse mapping for free
-        unique_pairs, inverse = np.unique(all_pairs, axis=0, return_inverse=True)
-        total_pd = len(unique_pairs)
+        unique_keys, inverse = np.unique(all_keys, return_inverse=True)
+        total_pd = len(unique_keys)
 
         # inverse maps each of 2*n_games entries to its unique pair index
         pd1_indices = inverse[:n_games]   # player-day index for player1
         pd2_indices = inverse[n_games:]   # player-day index for player2
 
-        # Step 2: Build player_offsets from unique_pairs
-        player_ids = unique_pairs[:, 0]
-        self._pd_days = unique_pairs[:, 1].astype(np.int32)
+        # Step 2: Build player_offsets from composite keys
+        player_ids = unique_keys // max_day_p1
+        self._pd_days = (unique_keys % max_day_p1).astype(np.int32)
 
         # Count player-days per player using scatter-add
         self._player_offsets = np.zeros(num_players + 1, dtype=np.int64)
         np.add.at(self._player_offsets[1:], player_ids, 1)
         np.cumsum(self._player_offsets, out=self._player_offsets)
+
+        # Reverse mapping: player-day index -> player_id (needed by active-set)
+        self._pd_to_player = np.repeat(
+            np.arange(num_players, dtype=np.int64),
+            np.diff(self._player_offsets),
+        )
 
         # Initialize ratings to 0 (log-gamma scale, equals initial_rating in Elo)
         self._pd_r = np.zeros(total_pd, dtype=np.float64)
@@ -232,18 +246,35 @@ class WHR(RatingSystem):
         if max_iterations is None:
             max_iterations = self.config.max_iterations
 
-        self._num_iterations = run_all_iterations(
-            self._num_players,
-            self._player_offsets,
-            self._pd_days,
-            self._pd_r,
-            self._pd_game_offsets,
-            self._pd_game_opp_pd,
-            self._pd_game_score,
-            self._w2_r,
-            max_iterations,
-            self.config.convergence_threshold,
-        )
+        if self.config.use_active_set or self.config.anderson_window > 0:
+            self._num_iterations = run_all_iterations_accelerated(
+                self._num_players,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._w2_r,
+                max_iterations,
+                self.config.convergence_threshold,
+                self.config.anderson_window,
+                self.config.use_active_set,
+                self._pd_to_player,
+            )
+        else:
+            self._num_iterations = run_all_iterations(
+                self._num_players,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._w2_r,
+                max_iterations,
+                self.config.convergence_threshold,
+            )
 
         # Compute uncertainties
         compute_uncertainties(
@@ -533,6 +564,7 @@ class WHR(RatingSystem):
         self._pd_game_offsets = None
         self._pd_game_opp_pd = None
         self._pd_game_score = None
+        self._pd_to_player = None
         self._stored_player1 = None
         self._stored_player2 = None
         self._stored_scores = None
@@ -549,5 +581,7 @@ class WHR(RatingSystem):
             f"WHR(w2={self.config.w2}, "
             f"max_iterations={self.config.max_iterations}, "
             f"warm_start={self.config.warm_start}, "
+            f"active_set={self.config.use_active_set}, "
+            f"anderson={self.config.anderson_window}, "
             f"players={players}, {status})"
         )

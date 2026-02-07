@@ -580,3 +580,272 @@ def fill_game_arrays(
         pd_game_opp_pd[pos2] = pd1
         pd_game_score[pos2] = 1.0 - score
         pd_game_pos[pd2] += 1
+
+
+# ---------------------------------------------------------------------------
+# Optimization 2: Active-set player updates
+# ---------------------------------------------------------------------------
+
+@njit(cache=True, fastmath=True)
+def run_iteration_active(
+    num_players: int,
+    active: np.ndarray,
+    player_offsets: np.ndarray,
+    pd_days: np.ndarray,
+    pd_r: np.ndarray,
+    pd_game_offsets: np.ndarray,
+    pd_game_opp_pd: np.ndarray,
+    pd_game_score: np.ndarray,
+    w2_r: float,
+    threshold: float,
+    pd_to_player: np.ndarray,
+) -> float:
+    """
+    Run one Newton-Raphson iteration, only updating active players.
+
+    Players whose update is below threshold are deactivated. When a player's
+    update exceeds threshold, all its opponents are reactivated.
+
+    Returns maximum rating change across all active players.
+    """
+    max_change = 0.0
+
+    for player_id in range(num_players):
+        if not active[player_id]:
+            continue
+
+        change = update_single_player(
+            player_id,
+            player_offsets,
+            pd_days,
+            pd_r,
+            pd_game_offsets,
+            pd_game_opp_pd,
+            pd_game_score,
+            w2_r,
+        )
+
+        if change < threshold:
+            active[player_id] = False
+        else:
+            # Reactivate all opponents of this player
+            pd_start = player_offsets[player_id]
+            pd_end = player_offsets[player_id + 1]
+            for pd_idx in range(pd_start, pd_end):
+                game_start = pd_game_offsets[pd_idx]
+                game_end = pd_game_offsets[pd_idx + 1]
+                for g in range(game_start, game_end):
+                    opp_pd = pd_game_opp_pd[g]
+                    opp_id = pd_to_player[opp_pd]
+                    active[opp_id] = True
+
+        if change > max_change:
+            max_change = change
+
+    return max_change
+
+
+# ---------------------------------------------------------------------------
+# Optimization 3: Anderson acceleration helpers
+# ---------------------------------------------------------------------------
+
+@njit(cache=True, fastmath=True)
+def solve_small_system(A: np.ndarray, b: np.ndarray, n: int) -> np.ndarray:
+    """
+    Solve dense n×n linear system Ax = b via Gaussian elimination with
+    partial pivoting. n is at most anderson_window (typically 3-5).
+    """
+    # Work on copies to avoid modifying originals
+    M = A.copy()
+    rhs = b.copy()
+
+    for col in range(n):
+        # Partial pivoting
+        best_row = col
+        best_val = abs(M[col, col])
+        for row in range(col + 1, n):
+            val = abs(M[row, col])
+            if val > best_val:
+                best_val = val
+                best_row = row
+        if best_row != col:
+            for j in range(n):
+                M[col, j], M[best_row, j] = M[best_row, j], M[col, j]
+            rhs[col], rhs[best_row] = rhs[best_row], rhs[col]
+
+        pivot = M[col, col]
+        if abs(pivot) < 1e-30:
+            continue
+
+        # Eliminate below
+        for row in range(col + 1, n):
+            factor = M[row, col] / pivot
+            for j in range(col + 1, n):
+                M[row, j] -= factor * M[col, j]
+            M[row, col] = 0.0
+            rhs[row] -= factor * rhs[col]
+
+    # Back substitution
+    x = np.zeros(n, dtype=np.float64)
+    for i in range(n - 1, -1, -1):
+        s = rhs[i]
+        for j in range(i + 1, n):
+            s -= M[i, j] * x[j]
+        if abs(M[i, i]) < 1e-30:
+            x[i] = 0.0
+        else:
+            x[i] = s / M[i, i]
+
+    return x
+
+
+@njit(cache=True, fastmath=True)
+def anderson_mix(
+    pd_r: np.ndarray,
+    F_buf: np.ndarray,
+    G_buf: np.ndarray,
+    buf_count: int,
+    m: int,
+    total_pd: int,
+    regularization: float,
+) -> None:
+    """
+    Anderson mixing step: combine recent iterates to accelerate convergence.
+
+    F_buf: circular buffer of residuals (f_k = x_after - x_before)
+    G_buf: circular buffer of post-iterate states (x_after)
+
+    Modifies pd_r in-place with the mixed result.
+    """
+    k = min(buf_count, m)
+    if k < 2:
+        return
+
+    # Build k×k Gram matrix FTF[i,j] = dot(F_buf[i], F_buf[j])
+    FTF = np.zeros((k, k), dtype=np.float64)
+    for i in range(k):
+        fi_idx = (buf_count - k + i) % m
+        for j in range(i, k):
+            fj_idx = (buf_count - k + j) % m
+            dot_val = 0.0
+            for t in range(total_pd):
+                dot_val += F_buf[fi_idx, t] * F_buf[fj_idx, t]
+            FTF[i, j] = dot_val
+            FTF[j, i] = dot_val
+
+    # Regularise diagonal
+    for i in range(k):
+        FTF[i, i] += regularization
+
+    # Solve FTF @ beta = ones(k)
+    ones_k = np.ones(k, dtype=np.float64)
+    beta = solve_small_system(FTF, ones_k, k)
+
+    # Normalise: alpha = beta / sum(beta)
+    beta_sum = 0.0
+    for i in range(k):
+        beta_sum += beta[i]
+    if abs(beta_sum) < 1e-30:
+        return
+    for i in range(k):
+        beta[i] /= beta_sum
+
+    # Mix: pd_r[t] = sum(alpha_i * G_buf[i, t])
+    for t in range(total_pd):
+        mixed = 0.0
+        for i in range(k):
+            g_idx = (buf_count - k + i) % m
+            mixed += beta[i] * G_buf[g_idx, t]
+        pd_r[t] = mixed
+
+
+# ---------------------------------------------------------------------------
+# Combined accelerated iteration loop
+# ---------------------------------------------------------------------------
+
+@njit(cache=True, fastmath=True)
+def run_all_iterations_accelerated(
+    num_players: int,
+    player_offsets: np.ndarray,
+    pd_days: np.ndarray,
+    pd_r: np.ndarray,
+    pd_game_offsets: np.ndarray,
+    pd_game_opp_pd: np.ndarray,
+    pd_game_score: np.ndarray,
+    w2_r: float,
+    max_iterations: int,
+    convergence_threshold: float,
+    anderson_window: int,
+    use_active_set: bool,
+    pd_to_player: np.ndarray,
+) -> int:
+    """
+    Run Newton-Raphson with optional active-set and Anderson acceleration.
+
+    Parameters:
+        anderson_window: Number of recent iterates to use for Anderson mixing.
+                         0 = disabled.
+        use_active_set: If True, skip converged players each iteration.
+        pd_to_player: Reverse mapping from player-day index to player ID.
+
+    Returns the number of iterations performed.
+    """
+    total_pd = len(pd_r)
+
+    # Active set initialisation: all players start active
+    active = np.ones(num_players, dtype=np.bool_)
+
+    # Anderson buffer initialisation
+    anderson_enabled = anderson_window > 0
+    m = max(anderson_window, 1)  # buffer size (at least 1 to avoid zero-size alloc)
+    if anderson_enabled:
+        F_buf = np.zeros((m, total_pd), dtype=np.float64)
+        G_buf = np.zeros((m, total_pd), dtype=np.float64)
+    else:
+        # Dummy arrays (never accessed)
+        F_buf = np.zeros((1, 1), dtype=np.float64)
+        G_buf = np.zeros((1, 1), dtype=np.float64)
+    buf_count = 0
+    regularization = 1e-10
+
+    for iteration in range(max_iterations):
+        # Save pre-iteration state if Anderson is enabled
+        if anderson_enabled:
+            x_before = pd_r.copy()
+
+        # Run one sweep
+        if use_active_set:
+            max_change = run_iteration_active(
+                num_players, active, player_offsets, pd_days, pd_r,
+                pd_game_offsets, pd_game_opp_pd, pd_game_score,
+                w2_r, convergence_threshold, pd_to_player,
+            )
+        else:
+            max_change = run_iteration(
+                num_players, player_offsets, pd_days, pd_r,
+                pd_game_offsets, pd_game_opp_pd, pd_game_score,
+                w2_r,
+            )
+
+        if max_change < convergence_threshold:
+            return iteration + 1
+
+        # Anderson acceleration step
+        if anderson_enabled:
+            slot = buf_count % m
+            for t in range(total_pd):
+                F_buf[slot, t] = pd_r[t] - x_before[t]  # residual
+                G_buf[slot, t] = pd_r[t]                 # post-state
+            buf_count += 1
+
+            if buf_count >= 2:
+                anderson_mix(
+                    pd_r, F_buf, G_buf, buf_count, m,
+                    total_pd, regularization,
+                )
+                # After mixing, reactivate all players for the next sweep
+                if use_active_set:
+                    for pid in range(num_players):
+                        active[pid] = True
+
+    return max_iterations
