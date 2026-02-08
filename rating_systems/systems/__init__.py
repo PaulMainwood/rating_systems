@@ -41,6 +41,7 @@ from .wglicko2 import WGlicko2, WGlicko2Config
 from .wwhr import WeightedWHR, WWHRConfig
 from .wstephenson import WStephenson, WStephensonConfig
 from .wyuksel import WYuksel, WYukselConfig
+from .wtrueskill import WeightedTrueSkill, WTrueSkillConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -86,4 +87,7 @@ __all__ = [
     # Weighted Yuksel
     "WYuksel",
     "WYukselConfig",
+    # Weighted TrueSkill
+    "WeightedTrueSkill",
+    "WTrueSkillConfig",
 ]

@@ -90,6 +90,9 @@ from .systems import (
     # Weighted Yuksel
     WYuksel,
     WYukselConfig,
+    # Weighted TrueSkill
+    WeightedTrueSkill,
+    WTrueSkillConfig,
 )
 from .results import FittedEloRatings, FittedGlickoRatings, FittedTrueSkillRatings, FittedYukselRatings
 from .evaluation import (
@@ -144,6 +147,8 @@ __all__ = [
     "WStephensonConfig",
     "WYuksel",
     "WYukselConfig",
+    "WeightedTrueSkill",
+    "WTrueSkillConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",

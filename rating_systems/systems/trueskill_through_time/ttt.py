@@ -17,6 +17,7 @@ import numpy as np
 
 from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameBatch, GameDataset
+from ...data.checkpoint import compute_fingerprint, verify_fingerprint, save_checkpoint, load_checkpoint
 from ...results.fitted_ratings import FittedTTTRatings
 from ._numba_core import (
     build_appearance_structure,
@@ -132,12 +133,22 @@ class TrueSkillThroughTime(RatingSystem):
         self._num_iterations = 0
         self._player_names: Optional[Dict[int, str]] = None
 
+        # Stored batched arrays for checkpointing (from get_batched_arrays())
+        self._stored_player1: Optional[np.ndarray] = None
+        self._stored_player2: Optional[np.ndarray] = None
+        self._stored_scores: Optional[np.ndarray] = None
+
         # Accumulated data for periodic refitting
         self._accum_p1: List[np.ndarray] = []
         self._accum_p2: List[np.ndarray] = []
         self._accum_scores: List[np.ndarray] = []
         self._accum_days: List[np.ndarray] = []
         self._last_refit_day: Optional[int] = None
+
+        # Loaded checkpoint state (used by fit() for warm-start)
+        self._checkpoint_loaded = False
+        self._checkpoint_num_batches = 0
+        self._checkpoint_num_appearances = 0
 
         super().__init__(num_players=num_players)
 
@@ -255,6 +266,11 @@ class TrueSkillThroughTime(RatingSystem):
             self._fitted = True
             return self
 
+        # Store batched arrays for checkpointing
+        self._stored_player1 = player1.copy()
+        self._stored_player2 = player2.copy()
+        self._stored_scores = scores.copy()
+
         # Create per-game day array
         n_games = len(player1)
         days = np.empty(n_games, dtype=np.int32)
@@ -264,10 +280,43 @@ class TrueSkillThroughTime(RatingSystem):
             end = day_offsets[d + 1]
             days[start:end] = day_indices[d]
 
+        # Save checkpoint state for warm-start if loaded
+        old_num_batches = 0
+        old_num_appearances = 0
+        old_fwd_mu = None
+        old_fwd_sigma = None
+        old_bwd_mu = None
+        old_bwd_sigma = None
+        old_lik_mu = None
+        old_lik_sigma = None
+        if self._checkpoint_loaded:
+            old_num_batches = self._checkpoint_num_batches
+            old_num_appearances = self._checkpoint_num_appearances
+            old_fwd_mu = self._state_forward_mu.copy()
+            old_fwd_sigma = self._state_forward_sigma.copy()
+            old_bwd_mu = self._state_backward_mu.copy()
+            old_bwd_sigma = self._state_backward_sigma.copy()
+            old_lik_mu = self._state_likelihood_mu.copy()
+            old_lik_sigma = self._state_likelihood_sigma.copy()
+            self._checkpoint_loaded = False
+
         # Build data structures (sparse)
         self._build_batch_structure(player1, player2, scores, days)
 
-        # Initial forward pass (all batches)
+        # Restore old state for warm-start
+        if old_fwd_mu is not None and old_num_appearances > 0:
+            n = old_num_appearances
+            self._state_forward_mu[:n] = old_fwd_mu[:n]
+            self._state_forward_sigma[:n] = old_fwd_sigma[:n]
+            self._state_backward_mu[:n] = old_bwd_mu[:n]
+            self._state_backward_sigma[:n] = old_bwd_sigma[:n]
+            self._state_likelihood_mu[:n] = old_lik_mu[:n]
+            self._state_likelihood_sigma[:n] = old_lik_sigma[:n]
+
+        # Determine start batch for forward pass
+        start_batch = old_num_batches if old_fwd_mu is not None else 0
+
+        # Initial forward pass (from start_batch onwards)
         initial_forward_pass_sparse(
             self._num_batches,
             self._batch_offsets,
@@ -296,7 +345,7 @@ class TrueSkillThroughTime(RatingSystem):
             self.config.sigma,
             self.config.beta,
             self.config.gamma,
-            0,  # start_batch
+            start_batch,
         )
 
         # Run convergence
@@ -605,6 +654,113 @@ class TrueSkillThroughTime(RatingSystem):
 
         self._num_games_fitted = len(player1)
 
+    def save_checkpoint(self, path: str, player_to_idx: Optional[Dict[int, int]] = None) -> None:
+        """Save fitted state to .npz for later warm-start.
+
+        Args:
+            path: Output file path (should end in .npz).
+            player_to_idx: Optional player ID → index mapping to store.
+        """
+        if not self._fitted or self._state_forward_mu is None:
+            raise ValueError("Model must be fitted before saving checkpoint.")
+
+        arrays = {
+            # State arrays
+            "state_forward_mu": self._state_forward_mu,
+            "state_forward_sigma": self._state_forward_sigma,
+            "state_backward_mu": self._state_backward_mu,
+            "state_backward_sigma": self._state_backward_sigma,
+            "state_likelihood_mu": self._state_likelihood_mu,
+            "state_likelihood_sigma": self._state_likelihood_sigma,
+            # Structure arrays
+            "app_offsets": self._app_offsets,
+            "app_player": self._app_player,
+            "app_prev": self._app_prev,
+            "app_next": self._app_next,
+            "app_batch": self._app_batch,
+            "player_last_app": self._player_last_app,
+            # Batch arrays
+            "batch_offsets": self._batch_offsets,
+            "batch_times": self._batch_times,
+            # Game arrays
+            "game_p1": self._game_p1,
+            "game_p2": self._game_p2,
+            "game_scores": self._game_scores,
+        }
+
+        fingerprint = compute_fingerprint(
+            self._stored_player1,
+            self._stored_player2,
+            self._stored_scores,
+            self._num_players,
+            int(self._batch_times[-1]) if self._num_batches > 0 else 0,
+        )
+
+        metadata = {
+            "system": "ttt",
+            "config": {
+                "mu": self.config.mu,
+                "sigma": self.config.sigma,
+                "beta": self.config.beta,
+                "gamma": self.config.gamma,
+            },
+            "fingerprint": fingerprint,
+            "num_batches": self._num_batches,
+            "num_appearances": self._num_appearances,
+            "num_players": self._num_players,
+            "num_iterations": self._num_iterations,
+        }
+        if player_to_idx is not None:
+            metadata["player_to_idx"] = {str(k): v for k, v in player_to_idx.items()}
+
+        save_checkpoint(path, arrays, metadata)
+
+    def load_checkpoint(self, path: str) -> dict:
+        """Load checkpoint state for warm-starting the next fit().
+
+        Sets internal arrays so the next call to fit() will warm-start
+        from the saved converged state instead of from scratch.
+
+        Args:
+            path: Path to .npz checkpoint file.
+
+        Returns:
+            Metadata dict (contains fingerprint, config, player_to_idx).
+        """
+        arrays, metadata = load_checkpoint(path)
+
+        # State arrays
+        self._state_forward_mu = arrays["state_forward_mu"]
+        self._state_forward_sigma = arrays["state_forward_sigma"]
+        self._state_backward_mu = arrays["state_backward_mu"]
+        self._state_backward_sigma = arrays["state_backward_sigma"]
+        self._state_likelihood_mu = arrays["state_likelihood_mu"]
+        self._state_likelihood_sigma = arrays["state_likelihood_sigma"]
+
+        # Structure arrays
+        self._app_offsets = arrays["app_offsets"]
+        self._app_player = arrays["app_player"]
+        self._app_prev = arrays["app_prev"]
+        self._app_next = arrays["app_next"]
+        self._app_batch = arrays["app_batch"]
+        self._player_last_app = arrays["player_last_app"]
+
+        # Batch arrays
+        self._batch_offsets = arrays["batch_offsets"]
+        self._batch_times = arrays["batch_times"]
+
+        # Game arrays
+        self._game_p1 = arrays["game_p1"]
+        self._game_p2 = arrays["game_p2"]
+        self._game_scores = arrays["game_scores"]
+
+        self._checkpoint_loaded = True
+        self._checkpoint_num_batches = metadata["num_batches"]
+        self._checkpoint_num_appearances = metadata["num_appearances"]
+        self._num_players = metadata.get("num_players", self._num_players)
+
+        return metadata
+
     def reset(self) -> "TrueSkillThroughTime":
         """Reset the rating system."""
         self._num_batches = 0
@@ -632,6 +788,9 @@ class TrueSkillThroughTime(RatingSystem):
         self._temp_bwd_sigma = None
         self._temp_lik_mu = None
         self._temp_lik_sigma = None
+        self._stored_player1 = None
+        self._stored_player2 = None
+        self._stored_scores = None
         self._num_games_fitted = 0
         self._num_iterations = 0
         self._accum_p1 = []
@@ -639,6 +798,9 @@ class TrueSkillThroughTime(RatingSystem):
         self._accum_scores = []
         self._accum_days = []
         self._last_refit_day = None
+        self._checkpoint_loaded = False
+        self._checkpoint_num_batches = 0
+        self._checkpoint_num_appearances = 0
         return super().reset()
 
     def __repr__(self) -> str:

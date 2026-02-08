@@ -24,6 +24,7 @@ import numpy as np
 
 from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameBatch, GameDataset
+from ...data.checkpoint import compute_fingerprint, verify_fingerprint, save_checkpoint, load_checkpoint
 from ...results.fitted_ratings import FittedWHRRatings
 from ._numba_core import (
     LN10_400,
@@ -145,6 +146,9 @@ class WHR(RatingSystem):
         self._stored_scores: Optional[np.ndarray] = None
         self._stored_days: Optional[np.ndarray] = None
         self._last_refit_day: Optional[int] = None
+
+        # Loaded checkpoint state (used by fit() for warm-start)
+        self._checkpoint_loaded = False
 
         super().__init__(num_players=num_players)
 
@@ -439,8 +443,31 @@ class WHR(RatingSystem):
         self._stored_scores = scores.copy()
         self._stored_days = days
 
+        # Save old checkpoint state for warm-start (if loaded)
+        old_pd_r = None
+        old_player_offsets = None
+        old_pd_days = None
+        if self._checkpoint_loaded and self._pd_r is not None:
+            old_pd_r = self._pd_r.copy()
+            old_player_offsets = self._player_offsets.copy()
+            old_pd_days = self._pd_days.copy()
+            self._checkpoint_loaded = False
+
         # Build data structures and optimize
         self._build_data_structures(player1, player2, scores, days, self._num_players)
+
+        # Warm-start from checkpoint if available
+        if old_pd_r is not None:
+            warm_start_ratings(
+                self._num_players,
+                old_player_offsets,
+                old_pd_days,
+                old_pd_r,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+            )
+
         self._run_optimization()
         self._extract_current_ratings()
 
@@ -555,6 +582,66 @@ class WHR(RatingSystem):
             raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
+    def save_checkpoint(self, path: str, player_to_idx: Optional[Dict[int, int]] = None) -> None:
+        """Save fitted state to .npz for later warm-start.
+
+        Args:
+            path: Output file path (should end in .npz).
+            player_to_idx: Optional player ID → index mapping to store.
+        """
+        if not self._fitted or self._pd_r is None:
+            raise ValueError("Model must be fitted before saving checkpoint.")
+
+        arrays = {
+            "pd_r": self._pd_r,
+            "pd_days": self._pd_days,
+            "player_offsets": self._player_offsets,
+        }
+
+        fingerprint = compute_fingerprint(
+            self._stored_player1,
+            self._stored_player2,
+            self._stored_scores,
+            self._num_players,
+            int(self._stored_days.max()),
+        )
+
+        metadata = {
+            "system": "whr",
+            "config": {
+                "w2": self.config.w2,
+                "initial_rating": self.config.initial_rating,
+                "initial_rd": self.config.initial_rd,
+            },
+            "fingerprint": fingerprint,
+            "num_iterations": self._num_iterations,
+        }
+        if player_to_idx is not None:
+            metadata["player_to_idx"] = {str(k): v for k, v in player_to_idx.items()}
+
+        save_checkpoint(path, arrays, metadata)
+
+    def load_checkpoint(self, path: str) -> dict:
+        """Load checkpoint state for warm-starting the next fit().
+
+        Sets internal arrays so the next call to fit() will warm-start
+        from the saved converged ratings instead of from zeros.
+
+        Args:
+            path: Path to .npz checkpoint file.
+
+        Returns:
+            Metadata dict (contains fingerprint, config, player_to_idx).
+        """
+        arrays, metadata = load_checkpoint(path)
+
+        self._pd_r = arrays["pd_r"]
+        self._pd_days = arrays["pd_days"]
+        self._player_offsets = arrays["player_offsets"]
+        self._checkpoint_loaded = True
+
+        return metadata
+
     def reset(self) -> "WHR":
         """Reset the rating system."""
         self._player_offsets = None
@@ -570,6 +657,7 @@ class WHR(RatingSystem):
         self._stored_scores = None
         self._stored_days = None
         self._last_refit_day = None
+        self._checkpoint_loaded = False
         self._num_games_fitted = 0
         self._num_iterations = 0
         return super().reset()
