@@ -582,6 +582,78 @@ class WHR(RatingSystem):
             raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
+    def save_state(self, path: str) -> None:
+        """Save fitted WHR state to .npz file.
+
+        Saves CSR structures and stored game arrays needed for prediction
+        and warm-start refitting.
+        """
+        if not self._fitted or self._pd_r is None:
+            raise ValueError("Model must be fitted before saving state.")
+
+        arrays = {
+            "ratings": self._ratings.ratings,
+            "rd": self._ratings.rd,
+            "pd_r": self._pd_r,
+            "pd_days": self._pd_days,
+            "player_offsets": self._player_offsets,
+            "pd_uncertainty": self._pd_uncertainty,
+            "pd_game_offsets": self._pd_game_offsets,
+            "pd_game_opp_pd": self._pd_game_opp_pd,
+            "pd_game_score": self._pd_game_score,
+            "pd_to_player": self._pd_to_player,
+        }
+        if self._stored_player1 is not None:
+            arrays["stored_player1"] = self._stored_player1
+            arrays["stored_player2"] = self._stored_player2
+            arrays["stored_scores"] = self._stored_scores
+            arrays["stored_days"] = self._stored_days
+
+        metadata = {
+            "system_class": "WHR",
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+            "config": {
+                "w2": self.config.w2,
+                "initial_rating": self.config.initial_rating,
+                "initial_rd": self.config.initial_rd,
+            },
+        }
+        save_checkpoint(path, arrays, metadata)
+
+    def load_state(self, path: str) -> None:
+        """Restore fitted WHR state from .npz file."""
+        arrays, metadata = load_checkpoint(path)
+
+        self._num_players = metadata["num_players"]
+        self._current_day = metadata["current_day"]
+        self._num_games_fitted = metadata.get("num_games_fitted", 0)
+        self._num_iterations = metadata.get("num_iterations", 0)
+        self._fitted = True
+
+        self._ratings = PlayerRatings(
+            ratings=arrays["ratings"],
+            rd=arrays["rd"],
+            metadata={"system": "whr", "config": self.config},
+        )
+
+        self._pd_r = arrays["pd_r"]
+        self._pd_days = arrays["pd_days"]
+        self._player_offsets = arrays["player_offsets"]
+        self._pd_uncertainty = arrays.get("pd_uncertainty")
+        self._pd_game_offsets = arrays.get("pd_game_offsets")
+        self._pd_game_opp_pd = arrays.get("pd_game_opp_pd")
+        self._pd_game_score = arrays.get("pd_game_score")
+        self._pd_to_player = arrays.get("pd_to_player")
+
+        if "stored_player1" in arrays:
+            self._stored_player1 = arrays["stored_player1"]
+            self._stored_player2 = arrays["stored_player2"]
+            self._stored_scores = arrays["stored_scores"]
+            self._stored_days = arrays["stored_days"]
+
     def save_checkpoint(self, path: str, player_to_idx: Optional[Dict[int, int]] = None) -> None:
         """Save fitted state to .npz for later warm-start.
 

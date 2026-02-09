@@ -654,6 +654,120 @@ class TrueSkillThroughTime(RatingSystem):
 
         self._num_games_fitted = len(player1)
 
+    def save_state(self, path: str) -> None:
+        """Save fitted TTT state to .npz file.
+
+        Saves sparse appearance structures and state arrays needed for
+        prediction and warm-start refitting.
+        """
+        if not self._fitted or self._state_forward_mu is None:
+            raise ValueError("Model must be fitted before saving state.")
+
+        arrays = {
+            "ratings": self._ratings.ratings,
+            "rd": self._ratings.rd,
+            # State arrays
+            "state_forward_mu": self._state_forward_mu,
+            "state_forward_sigma": self._state_forward_sigma,
+            "state_backward_mu": self._state_backward_mu,
+            "state_backward_sigma": self._state_backward_sigma,
+            "state_likelihood_mu": self._state_likelihood_mu,
+            "state_likelihood_sigma": self._state_likelihood_sigma,
+            # Structure arrays
+            "app_offsets": self._app_offsets,
+            "app_player": self._app_player,
+            "app_prev": self._app_prev,
+            "app_next": self._app_next,
+            "app_batch": self._app_batch,
+            "player_last_app": self._player_last_app,
+            # Batch arrays
+            "batch_offsets": self._batch_offsets,
+            "batch_times": self._batch_times,
+            # Game arrays
+            "game_p1": self._game_p1,
+            "game_p2": self._game_p2,
+            "game_scores": self._game_scores,
+        }
+
+        metadata = {
+            "system_class": "TrueSkillThroughTime",
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_batches": self._num_batches,
+            "num_appearances": self._num_appearances,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+            "config": {
+                "mu": self.config.mu,
+                "sigma": self.config.sigma,
+                "beta": self.config.beta,
+                "gamma": self.config.gamma,
+            },
+        }
+        save_checkpoint(path, arrays, metadata)
+
+    def load_state(self, path: str) -> None:
+        """Restore fitted TTT state from .npz file."""
+        arrays, metadata = load_checkpoint(path)
+
+        self._num_players = metadata["num_players"]
+        self._current_day = metadata["current_day"]
+        self._num_batches = metadata.get("num_batches", 0)
+        self._num_appearances = metadata.get("num_appearances", 0)
+        self._num_games_fitted = metadata.get("num_games_fitted", 0)
+        self._num_iterations = metadata.get("num_iterations", 0)
+        self._fitted = True
+
+        self._ratings = PlayerRatings(
+            ratings=arrays["ratings"],
+            rd=arrays["rd"],
+            metadata={"system": "ttt", "config": self.config},
+        )
+
+        # State arrays
+        self._state_forward_mu = arrays["state_forward_mu"]
+        self._state_forward_sigma = arrays["state_forward_sigma"]
+        self._state_backward_mu = arrays["state_backward_mu"]
+        self._state_backward_sigma = arrays["state_backward_sigma"]
+        self._state_likelihood_mu = arrays["state_likelihood_mu"]
+        self._state_likelihood_sigma = arrays["state_likelihood_sigma"]
+
+        # Structure arrays
+        self._app_offsets = arrays["app_offsets"]
+        self._app_player = arrays["app_player"]
+        self._app_prev = arrays["app_prev"]
+        self._app_next = arrays["app_next"]
+        self._app_batch = arrays["app_batch"]
+        self._player_last_app = arrays["player_last_app"]
+
+        # Batch arrays
+        self._batch_offsets = arrays["batch_offsets"]
+        self._batch_times = arrays["batch_times"]
+
+        # Game arrays
+        self._game_p1 = arrays["game_p1"]
+        self._game_p2 = arrays["game_p2"]
+        self._game_scores = arrays["game_scores"]
+
+        # Stored for checkpointing compatibility
+        self._stored_player1 = arrays["game_p1"]
+        self._stored_player2 = arrays["game_p2"]
+        self._stored_scores = arrays["game_scores"]
+
+        # Reconstruct per-game days from batch structure
+        days = np.empty(len(self._game_p1), dtype=np.int32)
+        for b in range(self._num_batches):
+            start = self._batch_offsets[b]
+            end = self._batch_offsets[b + 1] if b + 1 < self._num_batches else len(self._game_p1)
+            days[start:end] = self._batch_times[b]
+
+        # Initialize accumulation lists for update() compatibility
+        self._accum_p1 = [self._game_p1.copy()]
+        self._accum_p2 = [self._game_p2.copy()]
+        self._accum_scores = [self._game_scores.copy()]
+        self._accum_days = [days]
+        self._last_refit_day = self._current_day
+
     def save_checkpoint(self, path: str, player_to_idx: Optional[Dict[int, int]] = None) -> None:
         """Save fitted state to .npz for later warm-start.
 

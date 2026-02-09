@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 
 from ..data import GameBatch, GameDataset
+from ..data.checkpoint import save_checkpoint, load_checkpoint
 from ..data.types import PredictionResult
 from .player_ratings import PlayerRatings
 
@@ -219,6 +220,52 @@ class RatingSystem(ABC):
         if self._ratings is None:
             raise ValueError("No ratings available. Call fit() first.")
         return self._ratings.clone()
+
+    def save_state(self, path: str) -> None:
+        """Save fitted system state to .npz file.
+
+        Uses the checkpoint infrastructure. Subclasses with additional
+        internal state (WHR, TTT) should override to save their structures.
+
+        Args:
+            path: Output file path (should end in .npz).
+        """
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before saving state.")
+
+        arrays = {"ratings": self._ratings.ratings}
+        if self._ratings.rd is not None:
+            arrays["rd"] = self._ratings.rd
+        if self._ratings.volatility is not None:
+            arrays["volatility"] = self._ratings.volatility
+        if self._ratings.last_played is not None:
+            arrays["last_played"] = self._ratings.last_played
+
+        metadata = {
+            "system_class": self.__class__.__name__,
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+        }
+        save_checkpoint(path, arrays, metadata)
+
+    def load_state(self, path: str) -> None:
+        """Restore fitted state from .npz file.
+
+        Args:
+            path: Path to .npz state file.
+        """
+        arrays, metadata = load_checkpoint(path)
+
+        self._num_players = metadata["num_players"]
+        self._current_day = metadata["current_day"]
+        self._fitted = True
+
+        self._ratings = PlayerRatings(
+            ratings=arrays["ratings"],
+            rd=arrays.get("rd"),
+            volatility=arrays.get("volatility"),
+            last_played=arrays.get("last_played"),
+        )
 
     def __repr__(self) -> str:
         status = "fitted" if self._fitted else "not fitted"
