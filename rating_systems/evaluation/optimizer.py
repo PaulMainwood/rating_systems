@@ -499,6 +499,7 @@ def optimize_whr(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    fixed_params: Optional[Dict[str, Any]] = None,
 ) -> OptimizationResult:
     """
     Optimize WHR parameters.
@@ -511,6 +512,9 @@ def optimize_whr(
         train_ratio: Fraction of days for initial training
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
+        fixed_params: Parameters held fixed during optimization
+            (e.g. max_iterations, refit_max_iterations, refit_interval).
+            If None, WHR class defaults apply.
 
     Returns:
         OptimizationResult
@@ -521,7 +525,7 @@ def optimize_whr(
         WHR,
         dataset,
         train_ratio=train_ratio,
-        fixed_params={"max_iterations": 100, "refit_max_iterations": 70},
+        fixed_params=fixed_params or {},
         max_test_days=max_test_days,
     )
 
@@ -545,6 +549,7 @@ def optimize_ttt(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    fixed_params: Optional[Dict[str, Any]] = None,
 ) -> OptimizationResult:
     """
     Optimize TrueSkill Through Time parameters.
@@ -559,6 +564,9 @@ def optimize_ttt(
         train_ratio: Fraction of days for initial training
         method: Optimization method ("differential_evolution" or "L-BFGS-B")
         verbose: Whether to print progress
+        fixed_params: Parameters held fixed during optimization
+            (e.g. max_iterations, refit_max_iterations, refit_interval).
+            If None, TTT class defaults apply.
 
     Returns:
         OptimizationResult
@@ -569,11 +577,7 @@ def optimize_ttt(
         TrueSkillThroughTime,
         dataset,
         train_ratio=train_ratio,
-        fixed_params={
-            "max_iterations": 10,
-            "refit_max_iterations": 1,
-            "refit_interval": 1,  # Refit daily for accurate evaluation
-        },
+        fixed_params=fixed_params or {},
         max_test_days=max_test_days,
     )
 
