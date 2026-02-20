@@ -93,6 +93,9 @@ from .systems import (
     # Weighted TrueSkill
     WeightedTrueSkill,
     WTrueSkillConfig,
+    # Hodge intransitivity
+    HodgeIntransitivity,
+    HodgeConfig,
 )
 from .results import FittedEloRatings, FittedGlickoRatings, FittedTrueSkillRatings, FittedYukselRatings
 from .evaluation import (
@@ -149,6 +152,8 @@ __all__ = [
     "WYukselConfig",
     "WeightedTrueSkill",
     "WTrueSkillConfig",
+    "HodgeIntransitivity",
+    "HodgeConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",

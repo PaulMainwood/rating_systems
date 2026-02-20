@@ -42,6 +42,7 @@ from .wwhr import WeightedWHR, WWHRConfig
 from .wstephenson import WStephenson, WStephensonConfig
 from .wyuksel import WYuksel, WYukselConfig
 from .wtrueskill import WeightedTrueSkill, WTrueSkillConfig
+from .hodge import HodgeIntransitivity, HodgeConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -90,4 +91,7 @@ __all__ = [
     # Weighted TrueSkill
     "WeightedTrueSkill",
     "WTrueSkillConfig",
+    # Hodge intransitivity
+    "HodgeIntransitivity",
+    "HodgeConfig",
 ]
