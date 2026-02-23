@@ -23,6 +23,57 @@ from numba import njit, prange
 LN10_400 = math.log(10) / 400.0
 
 
+@njit(cache=True)
+def build_player_day_indices(player1, player2, days, num_players, n_games):
+    """Build player-day CSR structure in O(n_games) exploiting day-sorted input.
+
+    Returns: (player_offsets, pd_days, pd1_indices, pd2_indices, total_pd)
+    """
+    # Pass 1: Count unique player-days per player
+    last_day = np.full(num_players, -1, dtype=np.int32)
+    pd_count = np.zeros(num_players, dtype=np.int64)
+
+    for i in range(n_games):
+        p1, p2, d = player1[i], player2[i], days[i]
+        if d != last_day[p1]:
+            pd_count[p1] += 1
+            last_day[p1] = d
+        if d != last_day[p2]:
+            pd_count[p2] += 1
+            last_day[p2] = d
+
+    # Build player_offsets (cumulative sum)
+    player_offsets = np.zeros(num_players + 1, dtype=np.int64)
+    for p in range(num_players):
+        player_offsets[p + 1] = player_offsets[p] + pd_count[p]
+    total_pd = player_offsets[num_players]
+
+    # Pass 2: Fill pd_days and compute pd1_indices/pd2_indices
+    pd_days = np.empty(total_pd, dtype=np.int32)
+    pd1_indices = np.empty(n_games, dtype=np.int64)
+    pd2_indices = np.empty(n_games, dtype=np.int64)
+
+    last_day[:] = -1
+    pd_pos = player_offsets[:-1].copy()  # current write position per player
+
+    for i in range(n_games):
+        p1, p2, d = player1[i], player2[i], days[i]
+
+        if d != last_day[p1]:
+            pd_days[pd_pos[p1]] = d
+            pd_pos[p1] += 1
+            last_day[p1] = d
+        pd1_indices[i] = pd_pos[p1] - 1
+
+        if d != last_day[p2]:
+            pd_days[pd_pos[p2]] = d
+            pd_pos[p2] += 1
+            last_day[p2] = d
+        pd2_indices[i] = pd_pos[p2] - 1
+
+    return player_offsets, pd_days, pd1_indices, pd2_indices, total_pd
+
+
 @njit(cache=True, fastmath=True)
 def sigmoid(x: float) -> float:
     """Numerically stable sigmoid function."""

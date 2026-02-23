@@ -28,6 +28,7 @@ from ...data.checkpoint import compute_fingerprint, verify_fingerprint, save_che
 from ...results.fitted_ratings import FittedWHRRatings
 from ._numba_core import (
     LN10_400,
+    build_player_day_indices,
     compute_uncertainties,
     extract_current_ratings,
     extract_player_last_day,
@@ -186,29 +187,10 @@ class WHR(RatingSystem):
         """
         n_games = len(player1)
 
-        # Step 1: Get all (player, day) pairs via composite key
-        # Composite key = player * max_day_p1 + day preserves lexicographic order
-        max_day_p1 = int(days.max()) + 1
-        all_keys = np.concatenate([
-            player1.astype(np.int64) * max_day_p1 + days.astype(np.int64),
-            player2.astype(np.int64) * max_day_p1 + days.astype(np.int64),
-        ])
-
-        unique_keys, inverse = np.unique(all_keys, return_inverse=True)
-        total_pd = len(unique_keys)
-
-        # inverse maps each of 2*n_games entries to its unique pair index
-        pd1_indices = inverse[:n_games]   # player-day index for player1
-        pd2_indices = inverse[n_games:]   # player-day index for player2
-
-        # Step 2: Build player_offsets from composite keys
-        player_ids = unique_keys // max_day_p1
-        self._pd_days = (unique_keys % max_day_p1).astype(np.int32)
-
-        # Count player-days per player using scatter-add
-        self._player_offsets = np.zeros(num_players + 1, dtype=np.int64)
-        np.add.at(self._player_offsets[1:], player_ids, 1)
-        np.cumsum(self._player_offsets, out=self._player_offsets)
+        # Step 1+2: Build player-day CSR structure in O(n_games)
+        # Exploits day-sorted input to avoid O(n log n) np.unique
+        (self._player_offsets, self._pd_days, pd1_indices, pd2_indices, total_pd
+        ) = build_player_day_indices(player1, player2, days, num_players, n_games)
 
         # Reverse mapping: player-day index -> player_id (needed by active-set)
         self._pd_to_player = np.repeat(

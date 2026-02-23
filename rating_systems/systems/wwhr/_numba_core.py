@@ -13,6 +13,7 @@ from numba import njit, prange
 # Reuse shared functions from WHR
 from ..whr._numba_core import (
     LN10_400,
+    build_player_day_indices,
     sigmoid,
     solve_tridiagonal,
     extract_current_ratings,
