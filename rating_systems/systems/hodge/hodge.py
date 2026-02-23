@@ -71,6 +71,7 @@ class HodgeIntransitivity(RatingSystem):
         self,
         player1: np.ndarray,
         player2: np.ndarray,
+        day: Optional[int] = None,
     ) -> np.ndarray:
         """Compute I* intransitivity scores for each matchup.
 

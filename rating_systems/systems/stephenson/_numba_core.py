@@ -325,6 +325,59 @@ def predict_single(
     return _expected_score_steph(r1, r2, rd2, gamma)
 
 
+@njit(cache=True, fastmath=True, parallel=True)
+def predict_proba_batch_at_day(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    rd: np.ndarray,
+    gamma: float,
+    last_played: np.ndarray,
+    day: int,
+    cval: float,
+    max_rd: float,
+) -> np.ndarray:
+    """Predict win probabilities with RD grown forward to target day."""
+    n_games = len(player1)
+    proba = np.empty(n_games, dtype=np.float64)
+    c_squared = cval * cval
+
+    for i in prange(n_games):
+        p1 = player1[i]
+        p2 = player2[i]
+
+        r1 = ratings[p1]
+        r2 = ratings[p2]
+
+        # Grow opponent's RD forward (Stephenson only uses opponent's RD)
+        dt2 = max(0, day - last_played[p2])
+        rd2 = min(math.sqrt(rd[p2] * rd[p2] + c_squared * dt2), max_rd)
+
+        proba[i] = _expected_score_steph(r1, r2, rd2, gamma)
+
+    return proba
+
+
+@njit(cache=True, fastmath=True)
+def predict_single_at_day(
+    r1: float,
+    rd1: float,
+    r2: float,
+    rd2: float,
+    gamma: float,
+    lp1: int,
+    lp2: int,
+    day: int,
+    cval: float,
+    max_rd: float,
+) -> float:
+    """Predict win probability with RD grown to target day."""
+    # Stephenson only uses opponent's RD in the expected score formula
+    dt2 = max(0, day - lp2)
+    rd2_grown = min(math.sqrt(rd2 * rd2 + cval * cval * dt2), max_rd)
+    return _expected_score_steph(r1, r2, rd2_grown, gamma)
+
+
 @njit(cache=True)
 def get_top_n_indices(ratings: np.ndarray, n: int) -> np.ndarray:
     """Get indices of top N rated players."""

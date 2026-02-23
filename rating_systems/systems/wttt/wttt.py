@@ -25,7 +25,10 @@ from ..trueskill_through_time._numba_core import (
     build_appearance_structure,
     extract_final_ratings_sparse,
     predict_proba_batch,
+    predict_proba_batch_at_day,
     predict_single,
+    predict_single_at_day,
+    extract_player_last_day_ttt,
     INF_SIGMA,
 )
 
@@ -121,6 +124,7 @@ class WeightedTTT(RatingSystem):
         self._app_next: Optional[np.ndarray] = None
         self._app_batch: Optional[np.ndarray] = None
         self._player_last_app: Optional[np.ndarray] = None
+        self._player_last_day: Optional[np.ndarray] = None
 
         # Sparse state arrays
         self._state_forward_mu: Optional[np.ndarray] = None
@@ -386,6 +390,7 @@ class WeightedTTT(RatingSystem):
         self._num_games_fitted = n_games
         self._fitted = True
         self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
+        self._compute_player_last_day()
 
         # Store data for potential refitting
         if self.config.refit_interval > 0:
@@ -398,14 +403,47 @@ class WeightedTTT(RatingSystem):
 
         return self
 
+    def _compute_player_last_day(self) -> None:
+        """Cache last active day per player for time-aware predictions."""
+        if (self._player_last_app is not None and
+                self._app_batch is not None and
+                self._batch_times is not None):
+            self._player_last_day = extract_player_last_day_ttt(
+                self._num_players, self._player_last_app,
+                self._app_batch, self._batch_times,
+            )
+
     def predict_proba(
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
-        """Predict probability that player1 beats player2."""
+        """Predict probability that player1 beats player2.
+
+        When day is provided, grows sigma forward using gamma for inactivity.
+        """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
+
+        if day is not None and self._player_last_day is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
+                p1, p2 = int(player1), int(player2)
+                return predict_single_at_day(
+                    self._ratings.ratings[p1], self._ratings.ratings[p2],
+                    self._ratings.rd[p1], self._ratings.rd[p2],
+                    self._player_last_day[p1], self._player_last_day[p2],
+                    day, self.config.beta, self.config.gamma,
+                    self.DISPLAY_SCALE, self.DISPLAY_OFFSET,
+                )
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            return predict_proba_batch_at_day(
+                p1, p2, self._ratings.ratings, self._ratings.rd,
+                self._player_last_day, day,
+                self.config.beta, self.config.gamma,
+                self.DISPLAY_SCALE, self.DISPLAY_OFFSET,
+            )
 
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
             return predict_single(
@@ -485,6 +523,11 @@ class WeightedTTT(RatingSystem):
             self._last_refit_day = batch.day
 
         self._current_day = batch.day
+
+        if self._player_last_day is not None:
+            players = np.unique(np.concatenate([batch.player1, batch.player2]))
+            self._player_last_day[players] = batch.day
+
         return self
 
     def _refit_from_accumulated(self) -> None:
@@ -618,6 +661,7 @@ class WeightedTTT(RatingSystem):
             rd=rd,
             metadata={"system": "wttt", "config": self.config},
         )
+        self._compute_player_last_day()
 
         self._num_games_fitted = len(player1)
 
@@ -731,6 +775,7 @@ class WeightedTTT(RatingSystem):
         self._accum_days = [days]
         self._accum_weights = [weights]
         self._last_refit_day = self._current_day
+        self._compute_player_last_day()
 
     def reset(self) -> "WeightedTTT":
         """Reset the rating system."""

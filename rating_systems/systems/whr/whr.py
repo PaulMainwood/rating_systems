@@ -30,10 +30,13 @@ from ._numba_core import (
     LN10_400,
     compute_uncertainties,
     extract_current_ratings,
+    extract_player_last_day,
     fill_game_arrays,
     get_top_n_indices,
     predict_proba_batch,
+    predict_proba_batch_at_day,
     predict_single,
+    predict_single_at_day,
     run_all_iterations,
     run_all_iterations_accelerated,
     warm_start_ratings,
@@ -134,6 +137,7 @@ class WHR(RatingSystem):
         self._pd_game_opp_pd: Optional[np.ndarray] = None  # [total_games * 2]
         self._pd_game_score: Optional[np.ndarray] = None  # [total_games * 2]
         self._pd_to_player: Optional[np.ndarray] = None  # [total_player_days]
+        self._player_last_day: Optional[np.ndarray] = None  # [num_players] last active day
 
         # Metadata
         self._num_games_fitted = 0
@@ -317,6 +321,11 @@ class WHR(RatingSystem):
             metadata={"system": "whr", "config": self.config},
         )
 
+        # Cache last active day per player for time-aware predictions
+        self._player_last_day = extract_player_last_day(
+            self._num_players, self._player_offsets, self._pd_days,
+        )
+
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
         """Update ratings with a new batch (refits based on refit_interval)."""
         # Append new data
@@ -485,25 +494,44 @@ class WHR(RatingSystem):
         self._update_ratings(batch, self._ratings)
         self._current_day = batch.day
 
+        if self._player_last_day is not None:
+            players = np.unique(np.concatenate([batch.player1, batch.player2]))
+            self._player_last_day[players] = batch.day
+
         return self
 
     def predict_proba(
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.
 
-        Args:
-            player1: Single player ID or array of player IDs
-            player2: Single player ID or array of player IDs
-
-        Returns:
-            Single probability or array of probabilities
+        When day is provided, uses damped sigmoid to account for Wiener
+        process drift since each player's last active day.
         """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
+
+        if day is not None and self._player_last_day is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(
+                player2, (int, np.integer)
+            ):
+                return predict_single_at_day(
+                    self._ratings.ratings[int(player1)],
+                    self._ratings.ratings[int(player2)],
+                    self._player_last_day[int(player1)],
+                    self._player_last_day[int(player2)],
+                    day, self.config.w2,
+                )
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            return predict_proba_batch_at_day(
+                p1, p2, self._ratings.ratings,
+                self._player_last_day, day, self.config.w2,
+            )
 
         # Handle single prediction
         if isinstance(player1, (int, np.integer)) and isinstance(
@@ -653,6 +681,11 @@ class WHR(RatingSystem):
             self._stored_player2 = arrays["stored_player2"]
             self._stored_scores = arrays["stored_scores"]
             self._stored_days = arrays["stored_days"]
+
+        # Cache last active day per player for time-aware predictions
+        self._player_last_day = extract_player_last_day(
+            self._num_players, self._player_offsets, self._pd_days,
+        )
 
     def save_checkpoint(self, path: str, player_to_idx: Optional[Dict[int, int]] = None) -> None:
         """Save fitted state to .npz for later warm-start.

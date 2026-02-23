@@ -22,6 +22,8 @@ from ._numba_core import (
     fit_all_days_weighted,
     predict_proba_batch,
     predict_single,
+    predict_proba_batch_at_day,
+    predict_single_at_day,
     get_top_n_indices,
 )
 
@@ -170,14 +172,36 @@ class WGlicko2(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.
 
         Prediction is identical to standard Glicko-2 - weights only affect updates.
+        When day is provided, grows phi forward using volatility.
         """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
+
+        max_phi = self.config.max_rd / self.config.scale
+
+        if day is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
+                p1, p2 = int(player1), int(player2)
+                return predict_single_at_day(
+                    self._ratings.ratings[p1], self._ratings.rd[p1],
+                    self._ratings.ratings[p2], self._ratings.rd[p2],
+                    self._ratings.volatility[p1], self._ratings.volatility[p2],
+                    self._ratings.last_played[p1], self._ratings.last_played[p2],
+                    day, max_phi,
+                )
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            return predict_proba_batch_at_day(
+                p1, p2, self._ratings.ratings, self._ratings.rd,
+                self._ratings.volatility, self._ratings.last_played,
+                day, max_phi,
+            )
 
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
             p1, p2 = int(player1), int(player2)

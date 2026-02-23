@@ -31,6 +31,7 @@ from ._team_numba_core import (
     extract_final_ratings,
     predict_proba_batch,
     predict_team_match,
+    predict_team_match_at_day,
     INF_SIGMA,
 )
 
@@ -191,6 +192,7 @@ class SurfaceTTT(RatingSystem):
         self._agent_message_sigma: Optional[np.ndarray] = None
         self._agent_last_time: Optional[np.ndarray] = None
         self._player_last_batch: Optional[np.ndarray] = None
+        self._player_last_day: Optional[np.ndarray] = None  # [3*N] last active day per expanded player
 
         # Metadata
         self._num_games_fitted = 0
@@ -476,8 +478,20 @@ class SurfaceTTT(RatingSystem):
         self._num_games_fitted = n_games
         self._fitted = True
         self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
+        self._compute_player_last_day()
 
         return self
+
+    def _compute_player_last_day(self) -> None:
+        """Cache last active day per expanded player for time-aware predictions."""
+        if self._player_last_batch is not None and self._batch_times is not None:
+            n = len(self._player_last_batch)
+            last_day = np.zeros(n, dtype=np.int32)
+            for i in range(n):
+                b = self._player_last_batch[i]
+                if b >= 0:
+                    last_day[i] = int(self._batch_times[b])
+            self._player_last_day = last_day
 
     # =========================================================================
     # Prediction
@@ -488,6 +502,7 @@ class SurfaceTTT(RatingSystem):
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
         surface: Union[int, np.ndarray, List[int]] = SURFACE_NON_CLAY,
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2 on given surface.
@@ -498,6 +513,8 @@ class SurfaceTTT(RatingSystem):
             surface: Surface type (0=Non-Clay, 1=Clay) or array.
                      Original 3-surface values (0=Hard, 1=Clay, 2=Grass) are
                      automatically mapped.
+            day: Optional day for time-aware predictions. Grows base and
+                 surface sigmas forward from each player's last active day.
 
         Returns:
             Single probability or array of probabilities
@@ -508,7 +525,7 @@ class SurfaceTTT(RatingSystem):
         # Handle single prediction
         if isinstance(player1, (int, np.integer)):
             surf = map_surface(int(surface))
-            return self._predict_single(int(player1), int(player2), surf)
+            return self._predict_single(int(player1), int(player2), surf, day)
 
         # Batch prediction
         p1 = np.asarray(player1, dtype=np.int32)
@@ -524,6 +541,39 @@ class SurfaceTTT(RatingSystem):
         t1_surf = np.array([self._surface_player_id(p, s) for p, s in zip(p1, surf)], dtype=np.int32)
         t2_surf = np.array([self._surface_player_id(p, s) for p, s in zip(p2, surf)], dtype=np.int32)
 
+        if day is not None and self._player_last_day is not None:
+            # Time-aware batch prediction (Python loop since we need per-match dt)
+            n = len(p1)
+            result = np.empty(n, dtype=np.float64)
+            scale = np.float32(self.DISPLAY_SCALE)
+            offset = np.float32(self.DISPLAY_OFFSET)
+            gamma_base = self.config.gamma
+            gamma_surf = self.config.surface_gamma
+
+            for i in range(n):
+                _p1, _p2 = int(p1[i]), int(p2[i])
+                _t1s, _t2s = int(t1_surf[i]), int(t2_surf[i])
+
+                result[i] = predict_team_match_at_day(
+                    (self._ratings.ratings[_p1] - offset) / scale,
+                    self._ratings.rd[_p1] / scale,
+                    (self._ratings.ratings[_t1s] - offset) / scale,
+                    self._ratings.rd[_t1s] / scale,
+                    (self._ratings.ratings[_p2] - offset) / scale,
+                    self._ratings.rd[_p2] / scale,
+                    (self._ratings.ratings[_t2s] - offset) / scale,
+                    self._ratings.rd[_t2s] / scale,
+                    np.float32(self.config.base_weight),
+                    np.float32(self._surface_weight),
+                    np.float32(self.config.beta),
+                    max(0, day - self._player_last_day[_p1]),
+                    max(0, day - self._player_last_day[_t1s]),
+                    max(0, day - self._player_last_day[_p2]),
+                    max(0, day - self._player_last_day[_t2s]),
+                    np.float32(gamma_base), np.float32(gamma_surf),
+                )
+            return result
+
         return predict_proba_batch(
             p1, t1_surf, p2, t2_surf,
             self._ratings.ratings, self._ratings.rd,
@@ -534,7 +584,8 @@ class SurfaceTTT(RatingSystem):
             np.float32(self.DISPLAY_OFFSET),
         )
 
-    def _predict_single(self, p1: int, p2: int, surface: int) -> float:
+    def _predict_single(self, p1: int, p2: int, surface: int,
+                         day: Optional[int] = None) -> float:
         """Predict single game outcome."""
         t1_surf_id = self._surface_player_id(p1, surface)
         t2_surf_id = self._surface_player_id(p2, surface)
@@ -552,6 +603,23 @@ class SurfaceTTT(RatingSystem):
         t2_base_sigma = self._ratings.rd[p2] / scale
         t2_surf_mu = (self._ratings.ratings[t2_surf_id] - offset) / scale
         t2_surf_sigma = self._ratings.rd[t2_surf_id] / scale
+
+        if day is not None and self._player_last_day is not None:
+            return predict_team_match_at_day(
+                t1_base_mu, t1_base_sigma,
+                t1_surf_mu, t1_surf_sigma,
+                t2_base_mu, t2_base_sigma,
+                t2_surf_mu, t2_surf_sigma,
+                np.float32(self.config.base_weight),
+                np.float32(self._surface_weight),
+                np.float32(self.config.beta),
+                max(0, day - self._player_last_day[p1]),
+                max(0, day - self._player_last_day[t1_surf_id]),
+                max(0, day - self._player_last_day[p2]),
+                max(0, day - self._player_last_day[t2_surf_id]),
+                np.float32(self.config.gamma),
+                np.float32(self.config.surface_gamma),
+            )
 
         return predict_team_match(
             t1_base_mu, t1_base_sigma,

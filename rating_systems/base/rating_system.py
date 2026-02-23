@@ -105,6 +105,7 @@ class RatingSystem(ABC):
         self,
         player1: np.ndarray,
         player2: np.ndarray,
+        day: Optional[int] = None,
     ) -> np.ndarray:
         """
         Predict probability that player1 beats player2.
@@ -112,6 +113,10 @@ class RatingSystem(ABC):
         Args:
             player1: (N,) Player 1 IDs
             player2: (N,) Player 2 IDs
+            day: Optional day for time-aware predictions. Systems with
+                temporal uncertainty models grow uncertainty forward from
+                each player's last active day. Systems without time models
+                accept but ignore this parameter.
 
         Returns:
             (N,) Probabilities that player1 wins

@@ -285,6 +285,43 @@ def predict_team_match(
     return norm_cdf(diff_mu / diff_sigma)
 
 
+@njit(cache=True, fastmath=True)
+def predict_team_match_at_day(
+    t1_base_mu: float, t1_base_sigma: float,
+    t1_surf_mu: float, t1_surf_sigma: float,
+    t2_base_mu: float, t2_base_sigma: float,
+    t2_surf_mu: float, t2_surf_sigma: float,
+    w_base: float, w_surf: float,
+    beta: float,
+    dt_base1: int, dt_surf1: int,
+    dt_base2: int, dt_surf2: int,
+    gamma_base: float, gamma_surf: float,
+) -> float:
+    """Predict P(team1 wins) with sigma grown forward for inactivity."""
+    w_base_sq = w_base * w_base
+    w_surf_sq = w_surf * w_surf
+    beta_sq = beta * beta
+
+    # Grow sigmas
+    t1_base_sigma_eff = math.sqrt(t1_base_sigma * t1_base_sigma + gamma_base * gamma_base * dt_base1)
+    t1_surf_sigma_eff = math.sqrt(t1_surf_sigma * t1_surf_sigma + gamma_surf * gamma_surf * dt_surf1)
+    t2_base_sigma_eff = math.sqrt(t2_base_sigma * t2_base_sigma + gamma_base * gamma_base * dt_base2)
+    t2_surf_sigma_eff = math.sqrt(t2_surf_sigma * t2_surf_sigma + gamma_surf * gamma_surf * dt_surf2)
+
+    t1_mu = w_base * t1_base_mu + w_surf * t1_surf_mu
+    t2_mu = w_base * t2_base_mu + w_surf * t2_surf_mu
+
+    t1_var = w_base_sq * (t1_base_sigma_eff * t1_base_sigma_eff + beta_sq) + \
+             w_surf_sq * (t1_surf_sigma_eff * t1_surf_sigma_eff + beta_sq)
+    t2_var = w_base_sq * (t2_base_sigma_eff * t2_base_sigma_eff + beta_sq) + \
+             w_surf_sq * (t2_surf_sigma_eff * t2_surf_sigma_eff + beta_sq)
+
+    diff_mu = t1_mu - t2_mu
+    diff_sigma = math.sqrt(t1_var + t2_var)
+
+    return norm_cdf(diff_mu / diff_sigma)
+
+
 # =============================================================================
 # Batch Processing
 # =============================================================================

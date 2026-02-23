@@ -156,6 +156,7 @@ class WElo(RatingSystem):
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
         handicaps: Optional[Union[float, np.ndarray]] = None,
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.

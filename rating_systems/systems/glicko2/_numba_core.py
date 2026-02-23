@@ -427,6 +427,66 @@ def predict_single(
     return 1.0 / (1.0 + math.exp(-g_combined * (mu1 - mu2)))
 
 
+@njit(cache=True, fastmath=True, parallel=True)
+def predict_proba_batch_at_day(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    mu: np.ndarray,
+    phi: np.ndarray,
+    volatility: np.ndarray,
+    last_played: np.ndarray,
+    day: int,
+    max_phi: float,
+) -> np.ndarray:
+    """Predict win probabilities with phi grown forward using volatility."""
+    n_games = len(player1)
+    proba = np.empty(n_games, dtype=np.float64)
+
+    for i in prange(n_games):
+        p1 = player1[i]
+        p2 = player2[i]
+
+        mu1 = mu[p1]
+        mu2 = mu[p2]
+
+        # Grow phi forward from last active day
+        dt1 = max(0, day - last_played[p1])
+        dt2 = max(0, day - last_played[p2])
+        phi1 = min(math.sqrt(phi[p1] * phi[p1] + volatility[p1] * volatility[p1] * dt1), max_phi)
+        phi2 = min(math.sqrt(phi[p2] * phi[p2] + volatility[p2] * volatility[p2] * dt2), max_phi)
+
+        combined_phi = math.sqrt(phi1 * phi1 + phi2 * phi2)
+        g_combined = _g(combined_phi)
+
+        proba[i] = 1.0 / (1.0 + math.exp(-g_combined * (mu1 - mu2)))
+
+    return proba
+
+
+@njit(cache=True, fastmath=True)
+def predict_single_at_day(
+    mu1: float,
+    phi1: float,
+    mu2: float,
+    phi2: float,
+    vol1: float,
+    vol2: float,
+    lp1: int,
+    lp2: int,
+    day: int,
+    max_phi: float,
+) -> float:
+    """Predict win probability with phi grown forward using volatility."""
+    dt1 = max(0, day - lp1)
+    dt2 = max(0, day - lp2)
+    phi1_grown = min(math.sqrt(phi1 * phi1 + vol1 * vol1 * dt1), max_phi)
+    phi2_grown = min(math.sqrt(phi2 * phi2 + vol2 * vol2 * dt2), max_phi)
+
+    combined_phi = math.sqrt(phi1_grown * phi1_grown + phi2_grown * phi2_grown)
+    g_combined = _g(combined_phi)
+    return 1.0 / (1.0 + math.exp(-g_combined * (mu1 - mu2)))
+
+
 # =============================================================================
 # Utility functions
 # =============================================================================

@@ -247,6 +247,67 @@ def predict_single(
     return 1.0 / (1.0 + math.pow(10.0, exponent))
 
 
+@njit(cache=True, fastmath=True, parallel=True)
+def predict_proba_batch_at_day(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    rd: np.ndarray,
+    last_played: np.ndarray,
+    day: int,
+    c: float,
+    max_rd: float,
+) -> np.ndarray:
+    """Predict win probabilities with RD grown forward to target day."""
+    n_games = len(player1)
+    proba = np.empty(n_games, dtype=np.float64)
+
+    for i in prange(n_games):
+        p1 = player1[i]
+        p2 = player2[i]
+
+        r1 = ratings[p1]
+        r2 = ratings[p2]
+
+        # Grow RD forward from last active day
+        dt1 = max(0, day - last_played[p1])
+        dt2 = max(0, day - last_played[p2])
+        rd1 = min(math.sqrt(rd[p1] * rd[p1] + c * c * dt1), max_rd)
+        rd2 = min(math.sqrt(rd[p2] * rd[p2] + c * c * dt2), max_rd)
+
+        combined_rd = math.sqrt(rd1 * rd1 + rd2 * rd2)
+        g = _g(combined_rd)
+
+        exponent = -g * (r1 - r2) / 400.0
+        proba[i] = 1.0 / (1.0 + math.pow(10.0, exponent))
+
+    return proba
+
+
+@njit(cache=True, fastmath=True)
+def predict_single_at_day(
+    r1: float,
+    rd1: float,
+    r2: float,
+    rd2: float,
+    lp1: int,
+    lp2: int,
+    day: int,
+    c: float,
+    max_rd: float,
+) -> float:
+    """Predict win probability for a single matchup with RD grown to target day."""
+    dt1 = max(0, day - lp1)
+    dt2 = max(0, day - lp2)
+    rd1_grown = min(math.sqrt(rd1 * rd1 + c * c * dt1), max_rd)
+    rd2_grown = min(math.sqrt(rd2 * rd2 + c * c * dt2), max_rd)
+
+    combined_rd = math.sqrt(rd1_grown * rd1_grown + rd2_grown * rd2_grown)
+    g = _g(combined_rd)
+    exponent = -g * (r1 - r2) / 400.0
+    return 1.0 / (1.0 + math.pow(10.0, exponent))
+
+
 @njit(cache=True)
 def get_top_n_indices(ratings: np.ndarray, n: int) -> np.ndarray:
     """Get indices of top N rated players."""

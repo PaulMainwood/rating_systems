@@ -25,6 +25,8 @@ from ..stephenson._numba_core import (
     update_rd_for_inactivity_steph,
     predict_proba_batch,
     predict_single,
+    predict_proba_batch_at_day,
+    predict_single_at_day,
     get_top_n_indices,
     compute_player_update_steph,
 )

@@ -403,6 +403,75 @@ def predict_single(rating1: float, rating2: float) -> float:
     return sigmoid(r1 - r2)
 
 
+@njit(cache=True, fastmath=True)
+def extract_player_last_day(
+    num_players: int,
+    player_offsets: np.ndarray,
+    pd_days: np.ndarray,
+) -> np.ndarray:
+    """Extract last active day per player from CSR structure."""
+    last_day = np.zeros(num_players, dtype=np.int32)
+    for p in range(num_players):
+        pd_start = player_offsets[p]
+        pd_end = player_offsets[p + 1]
+        if pd_end > pd_start:
+            last_day[p] = pd_days[pd_end - 1]
+    return last_day
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def predict_proba_batch_at_day(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    player_last_day: np.ndarray,
+    day: int,
+    w2: float,
+) -> np.ndarray:
+    """Predict win probs with damped sigmoid accounting for Wiener drift.
+
+    Uses logistic-normal approximation:
+        P = sigmoid(mu / sqrt(1 + pi^2 * v / 3))
+    where v = w2_log * (dt1 + dt2) is the total Wiener variance.
+    """
+    n = len(player1)
+    result = np.empty(n, dtype=np.float64)
+    w2_log = w2 * LN10_400 * LN10_400
+    pi2_over_3 = math.pi * math.pi / 3.0
+
+    for i in prange(n):
+        mu = (ratings[player1[i]] - ratings[player2[i]]) * LN10_400
+        dt1 = max(0, day - player_last_day[player1[i]])
+        dt2 = max(0, day - player_last_day[player2[i]])
+        v = w2_log * (dt1 + dt2)
+        if v > 0.0:
+            result[i] = sigmoid(mu / math.sqrt(1.0 + pi2_over_3 * v))
+        else:
+            result[i] = sigmoid(mu)
+
+    return result
+
+
+@njit(cache=True, fastmath=True)
+def predict_single_at_day(
+    rating1: float,
+    rating2: float,
+    last_day1: int,
+    last_day2: int,
+    day: int,
+    w2: float,
+) -> float:
+    """Predict single win prob with damped sigmoid for Wiener drift."""
+    mu = (rating1 - rating2) * LN10_400
+    dt1 = max(0, day - last_day1)
+    dt2 = max(0, day - last_day2)
+    w2_log = w2 * LN10_400 * LN10_400
+    v = w2_log * (dt1 + dt2)
+    if v > 0.0:
+        return sigmoid(mu / math.sqrt(1.0 + math.pi * math.pi / 3.0 * v))
+    return sigmoid(mu)
+
+
 @njit(cache=True)
 def get_top_n_indices(ratings: np.ndarray, n: int) -> np.ndarray:
     """Get indices of top N rated players."""

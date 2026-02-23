@@ -152,6 +152,7 @@ class TrueSkill(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.

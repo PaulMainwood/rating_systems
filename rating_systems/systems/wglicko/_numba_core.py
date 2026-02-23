@@ -26,6 +26,8 @@ from ..glicko._numba_core import (
     update_rd_for_inactivity,
     predict_proba_batch,
     predict_single,
+    predict_proba_batch_at_day,
+    predict_single_at_day,
     get_top_n_indices,
 )
 

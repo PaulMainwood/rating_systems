@@ -154,7 +154,7 @@ class Backtester:
                 continue  # Skip days with no games
 
             # Predict before updating
-            predictions = self.system.predict_proba(batch.player1, batch.player2)
+            predictions = self.system.predict_proba(batch.player1, batch.player2, day=day)
 
             # Calculate metrics
             day_brier = brier_score(predictions, batch.scores)

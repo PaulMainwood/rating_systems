@@ -23,8 +23,11 @@ from ...results.fitted_ratings import FittedWHRRatings
 from ..whr._numba_core import (
     LN10_400,
     extract_current_ratings,
+    extract_player_last_day,
     predict_proba_batch,
+    predict_proba_batch_at_day,
     predict_single,
+    predict_single_at_day,
     get_top_n_indices,
     warm_start_ratings,
 )
@@ -120,6 +123,7 @@ class WeightedWHR(RatingSystem):
         self._pd_game_score: Optional[np.ndarray] = None
         self._pd_game_weights: Optional[np.ndarray] = None
         self._pd_to_player: Optional[np.ndarray] = None
+        self._player_last_day: Optional[np.ndarray] = None
 
         # Metadata
         self._num_games_fitted = 0
@@ -296,6 +300,11 @@ class WeightedWHR(RatingSystem):
             metadata={"system": "wwhr", "config": self.config},
         )
 
+        # Cache last active day per player for time-aware predictions
+        self._player_last_day = extract_player_last_day(
+            self._num_players, self._player_offsets, self._pd_days,
+        )
+
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
         """Update ratings with a new batch (refits based on refit_interval)."""
         raise NotImplementedError("Use update_weighted() or update() instead")
@@ -446,6 +455,11 @@ class WeightedWHR(RatingSystem):
             self._last_refit_day = batch.day
 
         self._current_day = batch.day
+
+        if self._player_last_day is not None:
+            players = np.unique(np.concatenate([batch.player1, batch.player2]))
+            self._player_last_day[players] = batch.day
+
         return self
 
     def update(self, batch: GameBatch) -> "WeightedWHR":
@@ -456,10 +470,32 @@ class WeightedWHR(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
-        """Predict probability that player1 beats player2."""
+        """Predict probability that player1 beats player2.
+
+        When day is provided, uses damped sigmoid for Wiener drift.
+        """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
+
+        if day is not None and self._player_last_day is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(
+                player2, (int, np.integer)
+            ):
+                return predict_single_at_day(
+                    self._ratings.ratings[int(player1)],
+                    self._ratings.ratings[int(player2)],
+                    self._player_last_day[int(player1)],
+                    self._player_last_day[int(player2)],
+                    day, self.config.w2,
+                )
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            return predict_proba_batch_at_day(
+                p1, p2, self._ratings.ratings,
+                self._player_last_day, day, self.config.w2,
+            )
 
         if isinstance(player1, (int, np.integer)) and isinstance(
             player2, (int, np.integer)
@@ -582,6 +618,11 @@ class WeightedWHR(RatingSystem):
             self._stored_scores = arrays["stored_scores"]
             self._stored_days = arrays["stored_days"]
             self._stored_weights = arrays.get("stored_weights")
+
+        # Cache last active day per player for time-aware predictions
+        self._player_last_day = extract_player_last_day(
+            self._num_players, self._player_offsets, self._pd_days,
+        )
 
     def reset(self) -> "WeightedWHR":
         """Reset the rating system."""

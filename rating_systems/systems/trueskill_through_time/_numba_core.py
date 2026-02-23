@@ -817,6 +817,90 @@ def predict_single(
     return norm_cdf(diff_mu / diff_sigma)
 
 
+@njit(cache=True)
+def extract_player_last_day_ttt(
+    num_players: int,
+    player_last_app: np.ndarray,
+    app_batch: np.ndarray,
+    batch_times: np.ndarray,
+) -> np.ndarray:
+    """Extract last active day per player from TTT sparse structure."""
+    last_day = np.zeros(num_players, dtype=np.int32)
+    for p in range(num_players):
+        app_idx = player_last_app[p]
+        if app_idx >= 0:
+            batch_idx = app_batch[app_idx]
+            last_day[p] = int(batch_times[batch_idx])
+    return last_day
+
+
+@njit(cache=True, parallel=True)
+def predict_proba_batch_at_day(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    rd: np.ndarray,
+    player_last_day: np.ndarray,
+    day: int,
+    beta: float,
+    gamma: float,
+    display_scale: float,
+    display_offset: float,
+) -> np.ndarray:
+    """Predict win probs with sigma grown forward by gamma for inactivity."""
+    n = len(player1)
+    result = np.empty(n, dtype=np.float64)
+
+    for i in prange(n):
+        p1, p2 = player1[i], player2[i]
+        mu1 = (ratings[p1] - display_offset) / display_scale
+        mu2 = (ratings[p2] - display_offset) / display_scale
+        sigma1 = rd[p1] / display_scale
+        sigma2 = rd[p2] / display_scale
+
+        # Grow sigma forward
+        dt1 = max(0, day - player_last_day[p1])
+        dt2 = max(0, day - player_last_day[p2])
+        sigma1_eff = math.sqrt(sigma1 * sigma1 + gamma * gamma * dt1)
+        sigma2_eff = math.sqrt(sigma2 * sigma2 + gamma * gamma * dt2)
+
+        diff_mu = mu1 - mu2
+        diff_sigma = math.sqrt(sigma1_eff * sigma1_eff + sigma2_eff * sigma2_eff + 2.0 * beta * beta)
+        result[i] = norm_cdf(diff_mu / diff_sigma)
+
+    return result
+
+
+@njit(cache=True)
+def predict_single_at_day(
+    rating1: float,
+    rating2: float,
+    rd1: float,
+    rd2: float,
+    last_day1: int,
+    last_day2: int,
+    day: int,
+    beta: float,
+    gamma: float,
+    display_scale: float,
+    display_offset: float,
+) -> float:
+    """Predict single win prob with sigma grown forward by gamma."""
+    mu1 = (rating1 - display_offset) / display_scale
+    mu2 = (rating2 - display_offset) / display_scale
+    sigma1 = rd1 / display_scale
+    sigma2 = rd2 / display_scale
+
+    dt1 = max(0, day - last_day1)
+    dt2 = max(0, day - last_day2)
+    sigma1_eff = math.sqrt(sigma1 * sigma1 + gamma * gamma * dt1)
+    sigma2_eff = math.sqrt(sigma2 * sigma2 + gamma * gamma * dt2)
+
+    diff_mu = mu1 - mu2
+    diff_sigma = math.sqrt(sigma1_eff * sigma1_eff + sigma2_eff * sigma2_eff + 2.0 * beta * beta)
+    return norm_cdf(diff_mu / diff_sigma)
+
+
 # =============================================================================
 # Weighted team game likelihood computation (for surface-specific TTT)
 # =============================================================================
