@@ -57,6 +57,7 @@ class WHRConfig:
     warm_start: bool = True  # Use previous solution as starting point for refits
     use_active_set: bool = True  # Skip converged players during iteration
     anderson_window: int = 5  # Anderson acceleration window (0 = disabled)
+    use_jacobi: bool = True  # Jacobi parallel iteration (vs sequential Gauss-Seidel)
 
     def __post_init__(self):
         if self.refit_max_iterations is None:
@@ -110,6 +111,7 @@ class WHR(RatingSystem):
         warm_start: bool = True,
         use_active_set: bool = True,
         anderson_window: int = 5,
+        use_jacobi: bool = True,
         num_players: Optional[int] = None,
     ):
         self.config = WHRConfig(
@@ -123,6 +125,7 @@ class WHR(RatingSystem):
             warm_start=warm_start,
             use_active_set=use_active_set,
             anderson_window=anderson_window,
+            use_jacobi=use_jacobi,
         )
 
         # w2 in log-gamma scale
@@ -254,7 +257,7 @@ class WHR(RatingSystem):
         if max_iterations is None:
             max_iterations = self.config.max_iterations
 
-        if self.config.use_active_set or self.config.anderson_window > 0:
+        if self.config.use_active_set or self.config.anderson_window > 0 or self.config.use_jacobi:
             self._num_iterations = run_all_iterations_accelerated(
                 self._num_players,
                 self._player_offsets,
@@ -269,6 +272,7 @@ class WHR(RatingSystem):
                 self.config.anderson_window,
                 self.config.use_active_set,
                 self._pd_to_player,
+                self.config.use_jacobi,
             )
         else:
             self._num_iterations = run_all_iterations(
