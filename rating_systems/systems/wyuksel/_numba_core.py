@@ -8,6 +8,7 @@ and second derivative, making decisive wins more informative.
 With w = 1.0 for all games, this is identical to standard Yuksel.
 """
 
+import math
 import numpy as np
 from numba import njit, prange
 
@@ -208,3 +209,209 @@ def fit_all_days_weighted(
                 alpha,
                 scaling_factor,
             )
+
+
+# ---------------------------------------------------------------------------
+# Handicap-aware variants
+# ---------------------------------------------------------------------------
+
+@njit(cache=True, fastmath=True)
+def update_single_game_weighted_h(
+    p1: int,
+    p2: int,
+    score: float,
+    w: float,
+    h: float,
+    ratings: np.ndarray,
+    R: np.ndarray,
+    W: np.ndarray,
+    V: np.ndarray,
+    D: np.ndarray,
+    delta_r_max: float,
+    alpha: float,
+    scaling_factor: float,
+) -> None:
+    """Update ratings for a single game with weight and handicap.
+
+    Handicap h shifts the win probability:
+        prob = sigmoid(Q * (r1 - r2 + h))
+
+    where h > 0 favours player 1. All downstream forces and curvature
+    use this handicap-adjusted probability.
+    """
+    r1 = ratings[p1]
+    r2 = ratings[p2]
+
+    # Win probability with handicap
+    prob = _sigmoid(Q * (r1 - r2 + h))
+
+    # Uncertainty estimates
+    phi_1 = np.sqrt(V[p1] / max(W[p1], 1e-10))
+    phi_2 = np.sqrt(V[p2] / max(W[p2], 1e-10))
+
+    # g functions
+    g_1 = _g(phi_1)
+    g_2 = _g(phi_2)
+    g_alpha_1 = _g(alpha * phi_1)
+    g_alpha_2 = _g(alpha * phi_2)
+
+    # Weighted forces
+    outcome_delta = score - prob
+    F_1 = w * g_2 * outcome_delta
+    F_2 = -w * g_1 * outcome_delta
+
+    # Weighted curvature
+    second_deriv = w * Q * prob * (1.0 - prob)
+
+    # Direction update with momentum
+    D_1 = D[p1]
+    D_1 = (g_2 * second_deriv) + (g_alpha_1 * D_1)
+
+    D_2 = D[p2]
+    D_2 = (g_1 * second_deriv) + (g_alpha_2 * D_2)
+
+    # Adaptive step size
+    denom = D_1 * D_1 + D_2 * D_2
+    if denom > 1e-10:
+        delta_r = (D_1 * F_1 - D_2 * F_2) / denom
+    else:
+        delta_r = 0.0
+
+    # Clamp
+    if delta_r > delta_r_max:
+        delta_r = delta_r_max
+    elif delta_r < -delta_r_max:
+        delta_r = -delta_r_max
+
+    # Adjust D
+    if np.abs(delta_r) > 1e-10:
+        D_1 = F_1 / delta_r
+        D_2 = -F_2 / delta_r
+
+    D[p1] = D_1
+    D[p2] = D_2
+
+    # Apply rating updates (zero-sum)
+    scaled_update = scaling_factor * delta_r
+    new_r_1 = r1 + scaled_update
+    new_r_2 = r2 - scaled_update
+
+    ratings[p1] = new_r_1
+    ratings[p2] = new_r_2
+
+    # Welford variance tracking (unchanged by weight)
+    omega_1 = g_alpha_1
+    W[p1] = omega_1 * W[p1] + 1.0
+    delta_R_1 = new_r_1 - R[p1]
+    R[p1] = R[p1] + delta_R_1 / W[p1]
+    V[p1] = omega_1 * V[p1] + delta_R_1 * (new_r_1 - R[p1])
+
+    omega_2 = g_alpha_2
+    W[p2] = omega_2 * W[p2] + 1.0
+    delta_R_2 = new_r_2 - R[p2]
+    R[p2] = R[p2] + delta_R_2 / W[p2]
+    V[p2] = omega_2 * V[p2] + delta_R_2 * (new_r_2 - R[p2])
+
+
+@njit(cache=True, fastmath=True)
+def update_ratings_sequential_weighted_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    ratings: np.ndarray,
+    R: np.ndarray,
+    W: np.ndarray,
+    V: np.ndarray,
+    D: np.ndarray,
+    delta_r_max: float,
+    alpha: float,
+    scaling_factor: float,
+) -> None:
+    """Update ratings for a batch of games with weights and handicaps (sequential)."""
+    n_games = len(player1)
+
+    for i in range(n_games):
+        update_single_game_weighted_h(
+            player1[i],
+            player2[i],
+            scores[i],
+            weights[i],
+            handicaps[i],
+            ratings,
+            R,
+            W,
+            V,
+            D,
+            delta_r_max,
+            alpha,
+            scaling_factor,
+        )
+
+
+@njit(cache=True, fastmath=True)
+def fit_all_days_weighted_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    day_offsets: np.ndarray,
+    ratings: np.ndarray,
+    R: np.ndarray,
+    W: np.ndarray,
+    V: np.ndarray,
+    D: np.ndarray,
+    delta_r_max: float,
+    alpha: float,
+    scaling_factor: float,
+) -> None:
+    """Fit Weighted Yuksel ratings for ALL days with per-game handicaps."""
+    n_days = len(day_offsets) - 1
+
+    for day_idx in range(n_days):
+        start = day_offsets[day_idx]
+        end = day_offsets[day_idx + 1]
+
+        for i in range(start, end):
+            update_single_game_weighted_h(
+                player1[i],
+                player2[i],
+                scores[i],
+                weights[i],
+                handicaps[i],
+                ratings,
+                R,
+                W,
+                V,
+                D,
+                delta_r_max,
+                alpha,
+                scaling_factor,
+            )
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def predict_proba_batch_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    handicaps: np.ndarray,
+) -> np.ndarray:
+    """Predict win probabilities with per-game handicaps (parallelised)."""
+    n_games = len(player1)
+    proba = np.empty(n_games, dtype=np.float64)
+
+    for i in prange(n_games):
+        r1 = ratings[player1[i]]
+        r2 = ratings[player2[i]]
+        proba[i] = _sigmoid(Q * (r1 - r2 + handicaps[i]))
+
+    return proba
+
+
+@njit(cache=True, fastmath=True)
+def predict_single_h(r1: float, r2: float, handicap: float) -> float:
+    """Predict single win probability with handicap."""
+    return _sigmoid(Q * (r1 - r2 + handicap))

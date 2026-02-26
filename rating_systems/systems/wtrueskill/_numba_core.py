@@ -10,7 +10,7 @@ With w = 1.0 for all games, this is identical to standard TrueSkill.
 
 import math
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 # Reuse utility functions from base TrueSkill
 from ..trueskill._numba_core import (
@@ -207,3 +207,202 @@ def fit_all_days_weighted(
             sigma[p1] = new_sigma1
             mu[p2] = new_mu2
             sigma[p2] = new_sigma2
+
+
+# ---------------------------------------------------------------------------
+# Handicap-aware variants
+# ---------------------------------------------------------------------------
+
+@njit(cache=True, fastmath=True)
+def update_single_game_weighted_h(
+    mu1: float,
+    sigma1: float,
+    mu2: float,
+    sigma2: float,
+    score: float,
+    weight: float,
+    h: float,
+    beta: float,
+    min_sigma: float,
+) -> tuple:
+    """Update ratings for a single 1v1 game with weight and handicap.
+
+    Handicap h shifts the normalized skill difference:
+        t = (mu1 - mu2 + h) / c
+
+    where h > 0 favours player 1 (in TrueSkill mu-scale units).
+    """
+    c_squared = 2.0 * beta * beta + sigma1 * sigma1 + sigma2 * sigma2
+    c = math.sqrt(c_squared)
+
+    # Handicap-shifted normalized skill difference
+    t = (mu1 - mu2 + h) / c
+
+    sigma1_sq_over_c = sigma1 * sigma1 / c
+    sigma2_sq_over_c = sigma2 * sigma2 / c
+    sigma1_sq_over_c_sq = sigma1 * sigma1 / c_squared
+    sigma2_sq_over_c_sq = sigma2 * sigma2 / c_squared
+
+    if score > 0.5:
+        v = _v_win(t)
+        w = _w_win(t, v)
+
+        new_mu1 = mu1 + weight * sigma1_sq_over_c * v
+        new_mu2 = mu2 - weight * sigma2_sq_over_c * v
+
+        new_sigma1_sq = sigma1 * sigma1 * max(1.0 - weight * sigma1_sq_over_c_sq * w,
+                                                min_sigma * min_sigma / (sigma1 * sigma1))
+        new_sigma2_sq = sigma2 * sigma2 * max(1.0 - weight * sigma2_sq_over_c_sq * w,
+                                                min_sigma * min_sigma / (sigma2 * sigma2))
+
+    elif score < 0.5:
+        v = _v_win(-t)
+        w = _w_win(-t, v)
+
+        new_mu1 = mu1 - weight * sigma1_sq_over_c * v
+        new_mu2 = mu2 + weight * sigma2_sq_over_c * v
+
+        new_sigma1_sq = sigma1 * sigma1 * max(1.0 - weight * sigma1_sq_over_c_sq * w,
+                                                min_sigma * min_sigma / (sigma1 * sigma1))
+        new_sigma2_sq = sigma2 * sigma2 * max(1.0 - weight * sigma2_sq_over_c_sq * w,
+                                                min_sigma * min_sigma / (sigma2 * sigma2))
+
+    else:
+        v = _pdf(t) / (_cdf(t) * _cdf(-t) + 1e-10)
+        w = v * v
+
+        new_mu1 = mu1 - weight * sigma1_sq_over_c * v * t / (abs(t) + 0.1)
+        new_mu2 = mu2 + weight * sigma2_sq_over_c * v * t / (abs(t) + 0.1)
+
+        new_sigma1_sq = sigma1 * sigma1 * max(1.0 - weight * sigma1_sq_over_c_sq * w * 0.5,
+                                                min_sigma * min_sigma / (sigma1 * sigma1))
+        new_sigma2_sq = sigma2 * sigma2 * max(1.0 - weight * sigma2_sq_over_c_sq * w * 0.5,
+                                                min_sigma * min_sigma / (sigma2 * sigma2))
+
+    new_sigma1 = math.sqrt(max(new_sigma1_sq, min_sigma * min_sigma))
+    new_sigma2 = math.sqrt(max(new_sigma2_sq, min_sigma * min_sigma))
+
+    return new_mu1, new_sigma1, new_mu2, new_sigma2
+
+
+@njit(cache=True, fastmath=True)
+def update_ratings_sequential_weighted_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    beta: float,
+    min_sigma: float,
+) -> None:
+    """Update TrueSkill ratings for a batch of games with weights and handicaps.
+
+    Handicaps are from player1's perspective (positive = player1 advantage,
+    in TrueSkill mu-scale units).
+    """
+    n_games = len(player1)
+
+    for i in range(n_games):
+        p1 = player1[i]
+        p2 = player2[i]
+
+        new_mu1, new_sigma1, new_mu2, new_sigma2 = update_single_game_weighted_h(
+            mu[p1], sigma[p1],
+            mu[p2], sigma[p2],
+            scores[i],
+            weights[i],
+            handicaps[i],
+            beta,
+            min_sigma,
+        )
+
+        mu[p1] = new_mu1
+        sigma[p1] = new_sigma1
+        mu[p2] = new_mu2
+        sigma[p2] = new_sigma2
+
+
+@njit(cache=True, fastmath=True)
+def fit_all_days_weighted_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    day_offsets: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    beta: float,
+    min_sigma: float,
+) -> None:
+    """Fit Weighted TrueSkill ratings for ALL days with per-game handicaps."""
+    n_days = len(day_offsets) - 1
+
+    for day_idx in range(n_days):
+        start = day_offsets[day_idx]
+        end = day_offsets[day_idx + 1]
+
+        for i in range(start, end):
+            p1 = player1[i]
+            p2 = player2[i]
+
+            new_mu1, new_sigma1, new_mu2, new_sigma2 = update_single_game_weighted_h(
+                mu[p1], sigma[p1],
+                mu[p2], sigma[p2],
+                scores[i],
+                weights[i],
+                handicaps[i],
+                beta,
+                min_sigma,
+            )
+
+            mu[p1] = new_mu1
+            sigma[p1] = new_sigma1
+            mu[p2] = new_mu2
+            sigma[p2] = new_sigma2
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def predict_proba_batch_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    beta: float,
+    handicaps: np.ndarray,
+) -> np.ndarray:
+    """Predict win probabilities with per-game handicaps (parallelised)."""
+    n_games = len(player1)
+    proba = np.empty(n_games, dtype=np.float64)
+
+    for i in prange(n_games):
+        p1 = player1[i]
+        p2 = player2[i]
+
+        mu1 = mu[p1]
+        mu2 = mu[p2]
+        sigma1 = sigma[p1]
+        sigma2 = sigma[p2]
+
+        c = math.sqrt(2.0 * beta * beta + sigma1 * sigma1 + sigma2 * sigma2)
+        t = (mu1 - mu2 + handicaps[i]) / c
+        proba[i] = _cdf(t)
+
+    return proba
+
+
+@njit(cache=True, fastmath=True)
+def predict_single_h(
+    mu1: float,
+    sigma1: float,
+    mu2: float,
+    sigma2: float,
+    beta: float,
+    handicap: float,
+) -> float:
+    """Predict single win probability with handicap."""
+    c = math.sqrt(2.0 * beta * beta + sigma1 * sigma1 + sigma2 * sigma2)
+    t = (mu1 - mu2 + handicap) / c
+    return _cdf(t)

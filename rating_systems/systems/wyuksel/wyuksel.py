@@ -19,9 +19,13 @@ from ...data import GameBatch, GameDataset
 from ...results.fitted_ratings import FittedYukselRatings
 from ._numba_core import (
     update_ratings_sequential_weighted,
+    update_ratings_sequential_weighted_h,
     fit_all_days_weighted,
+    fit_all_days_weighted_h,
     predict_proba_batch,
+    predict_proba_batch_h,
     predict_single,
+    predict_single_h,
     get_top_n_indices,
     compute_phi,
 )
@@ -125,13 +129,20 @@ class WYuksel(RatingSystem):
         )
         self._num_games_fitted += len(batch)
 
-    def update_weighted(self, batch: GameBatch, weights: np.ndarray) -> "WYuksel":
+    def update_weighted(
+        self,
+        batch: GameBatch,
+        weights: np.ndarray,
+        handicaps: Optional[np.ndarray] = None,
+    ) -> "WYuksel":
         """
-        Incrementally update ratings with per-game weights.
+        Incrementally update ratings with per-game weights and optional handicaps.
 
         Args:
             batch: Games to process
             weights: Per-game weights array (same length as batch)
+            handicaps: Per-game handicap for player 1 (Elo rating points).
+                       Positive = player 1 advantage. If None, all zero.
 
         Returns:
             self (for method chaining)
@@ -143,20 +154,39 @@ class WYuksel(RatingSystem):
             return self
 
         weights = np.ascontiguousarray(weights, dtype=np.float64)
-        update_ratings_sequential_weighted(
-            batch.player1,
-            batch.player2,
-            batch.scores,
-            weights,
-            self._ratings.ratings,
-            self._R,
-            self._W,
-            self._V,
-            self._D,
-            self.config.delta_r_max,
-            self.config.alpha,
-            self.config.scaling_factor,
-        )
+
+        if handicaps is not None:
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+            update_ratings_sequential_weighted_h(
+                batch.player1,
+                batch.player2,
+                batch.scores,
+                weights,
+                h,
+                self._ratings.ratings,
+                self._R,
+                self._W,
+                self._V,
+                self._D,
+                self.config.delta_r_max,
+                self.config.alpha,
+                self.config.scaling_factor,
+            )
+        else:
+            update_ratings_sequential_weighted(
+                batch.player1,
+                batch.player2,
+                batch.scores,
+                weights,
+                self._ratings.ratings,
+                self._R,
+                self._W,
+                self._V,
+                self._D,
+                self.config.delta_r_max,
+                self.config.alpha,
+                self.config.scaling_factor,
+            )
         self._num_games_fitted += len(batch)
         self._current_day = batch.day
         return self
@@ -165,15 +195,30 @@ class WYuksel(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        handicaps: Optional[Union[float, np.ndarray]] = None,
         day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.
 
-        Prediction is identical to standard Yuksel - weights only affect updates.
+        When handicaps are provided, they shift the expected score
+        (in Elo rating points, positive = player1 advantage).
         """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
+
+        if handicaps is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
+                h = float(handicaps)
+                return predict_single_h(
+                    self._ratings.ratings[int(player1)],
+                    self._ratings.ratings[int(player2)],
+                    h,
+                )
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+            return predict_proba_batch_h(p1, p2, self._ratings.ratings, h)
 
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
             return predict_single(
@@ -189,15 +234,18 @@ class WYuksel(RatingSystem):
         self,
         dataset: GameDataset,
         weights: Optional[np.ndarray] = None,
+        handicaps: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "WYuksel":
         """
-        Fit the rating system on a dataset with optional per-game weights.
+        Fit the rating system on a dataset with optional per-game weights and handicaps.
 
         Args:
             dataset: Game dataset to fit on
             weights: Per-game weights array. If None, all default to 1.0.
+            handicaps: Per-game handicap for player 1 (Elo rating points).
+                       Positive = player 1 advantage. If None, all zero.
             end_day: Last day to include (inclusive). Cannot be used with weights.
             player_names: Optional mapping of player_id -> name
 
@@ -227,21 +275,33 @@ class WYuksel(RatingSystem):
             else:
                 w = np.ascontiguousarray(weights, dtype=np.float64)
 
-            fit_all_days_weighted(
-                player1,
-                player2,
-                scores,
-                w,
-                day_offsets,
-                self._ratings.ratings,
-                self._R,
-                self._W,
-                self._V,
-                self._D,
-                self.config.delta_r_max,
-                self.config.alpha,
-                self.config.scaling_factor,
-            )
+            if handicaps is not None:
+                h = np.ascontiguousarray(handicaps, dtype=np.float64)
+                fit_all_days_weighted_h(
+                    player1, player2, scores, w, h,
+                    day_offsets,
+                    self._ratings.ratings,
+                    self._R,
+                    self._W,
+                    self._V,
+                    self._D,
+                    self.config.delta_r_max,
+                    self.config.alpha,
+                    self.config.scaling_factor,
+                )
+            else:
+                fit_all_days_weighted(
+                    player1, player2, scores, w,
+                    day_offsets,
+                    self._ratings.ratings,
+                    self._R,
+                    self._W,
+                    self._V,
+                    self._D,
+                    self.config.delta_r_max,
+                    self.config.alpha,
+                    self.config.scaling_factor,
+                )
             self._num_games_fitted = len(player1)
             self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
         else:

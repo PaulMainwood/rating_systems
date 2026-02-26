@@ -34,10 +34,37 @@ from ..whr._numba_core import (
 )
 from ._numba_core import (
     fill_game_arrays_weighted,
+    fill_game_arrays_weighted_h,
     compute_uncertainties_weighted,
+    compute_uncertainties_weighted_h,
     run_all_iterations_weighted,
     run_all_iterations_accelerated_weighted,
+    run_all_iterations_accelerated_weighted_h,
 )
+
+from numba import njit, prange
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _predict_proba_batch_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    handicaps: np.ndarray,
+) -> np.ndarray:
+    """Predict probabilities with per-game handicaps (log-gamma scale)."""
+    n = len(player1)
+    proba = np.empty(n, dtype=np.float64)
+    for i in prange(n):
+        r1 = (ratings[player1[i]] - 1500.0) * LN10_400
+        r2 = (ratings[player2[i]] - 1500.0) * LN10_400
+        x = r1 - r2 + handicaps[i]
+        if x >= 0:
+            proba[i] = 1.0 / (1.0 + np.exp(-x))
+        else:
+            ex = np.exp(x)
+            proba[i] = ex / (1.0 + ex)
+    return proba
 
 
 @dataclass
@@ -126,6 +153,7 @@ class WeightedWHR(RatingSystem):
         self._pd_game_opp_pd: Optional[np.ndarray] = None
         self._pd_game_score: Optional[np.ndarray] = None
         self._pd_game_weights: Optional[np.ndarray] = None
+        self._pd_game_handicaps: Optional[np.ndarray] = None
         self._pd_to_player: Optional[np.ndarray] = None
         self._player_last_day: Optional[np.ndarray] = None
 
@@ -140,6 +168,7 @@ class WeightedWHR(RatingSystem):
         self._stored_scores: Optional[np.ndarray] = None
         self._stored_days: Optional[np.ndarray] = None
         self._stored_weights: Optional[np.ndarray] = None
+        self._stored_handicaps: Optional[np.ndarray] = None
         self._last_refit_day: Optional[int] = None
 
         super().__init__(num_players=num_players)
@@ -160,11 +189,12 @@ class WeightedWHR(RatingSystem):
         days: np.ndarray,
         weights: np.ndarray,
         num_players: int,
+        handicaps: Optional[np.ndarray] = None,
     ) -> None:
         """
-        Build CSR-like data structures from game arrays with weights.
+        Build CSR-like data structures from game arrays with weights and optional handicaps.
 
-        Same as WHR but also allocates and fills pd_game_weights.
+        Same as WHR but also allocates and fills pd_game_weights (and pd_game_handicaps).
         """
         n_games = len(player1)
 
@@ -193,22 +223,39 @@ class WeightedWHR(RatingSystem):
 
         total_game_refs = self._pd_game_offsets[-1]
 
-        # Step 4: Fill game arrays with weights
+        # Step 4: Fill game arrays with weights (and handicaps if provided)
         self._pd_game_opp_pd = np.empty(total_game_refs, dtype=np.int64)
         self._pd_game_score = np.empty(total_game_refs, dtype=np.float64)
         self._pd_game_weights = np.empty(total_game_refs, dtype=np.float64)
 
-        fill_game_arrays_weighted(
-            n_games,
-            pd1_indices,
-            pd2_indices,
-            scores,
-            weights,
-            self._pd_game_offsets,
-            self._pd_game_opp_pd,
-            self._pd_game_score,
-            self._pd_game_weights,
-        )
+        if handicaps is not None:
+            self._pd_game_handicaps = np.empty(total_game_refs, dtype=np.float64)
+            fill_game_arrays_weighted_h(
+                n_games,
+                pd1_indices,
+                pd2_indices,
+                scores,
+                weights,
+                handicaps,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._pd_game_weights,
+                self._pd_game_handicaps,
+            )
+        else:
+            self._pd_game_handicaps = None
+            fill_game_arrays_weighted(
+                n_games,
+                pd1_indices,
+                pd2_indices,
+                scores,
+                weights,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._pd_game_weights,
+            )
 
     def _run_optimization(self, max_iterations: Optional[int] = None) -> None:
         """Run weighted Newton-Raphson optimization."""
@@ -218,7 +265,42 @@ class WeightedWHR(RatingSystem):
         if max_iterations is None:
             max_iterations = self.config.max_iterations
 
-        if self.config.use_active_set or self.config.anderson_window > 0 or self.config.use_jacobi:
+        has_handicaps = self._pd_game_handicaps is not None
+
+        if has_handicaps:
+            # Use handicap-aware solver
+            self._num_iterations = run_all_iterations_accelerated_weighted_h(
+                self._num_players,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._pd_game_weights,
+                self._pd_game_handicaps,
+                self._w2_r,
+                max_iterations,
+                self.config.convergence_threshold,
+                self.config.anderson_window,
+                self.config.use_active_set,
+                self._pd_to_player,
+                self.config.use_jacobi,
+            )
+            compute_uncertainties_weighted_h(
+                self._num_players,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+                self._pd_uncertainty,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._pd_game_weights,
+                self._pd_game_handicaps,
+                self._w2_r,
+            )
+        elif self.config.use_active_set or self.config.anderson_window > 0 or self.config.use_jacobi:
             self._num_iterations = run_all_iterations_accelerated_weighted(
                 self._num_players,
                 self._player_offsets,
@@ -236,6 +318,18 @@ class WeightedWHR(RatingSystem):
                 self._pd_to_player,
                 self.config.use_jacobi,
             )
+            compute_uncertainties_weighted(
+                self._num_players,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+                self._pd_uncertainty,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._pd_game_weights,
+                self._w2_r,
+            )
         else:
             self._num_iterations = run_all_iterations_weighted(
                 self._num_players,
@@ -250,20 +344,18 @@ class WeightedWHR(RatingSystem):
                 max_iterations,
                 self.config.convergence_threshold,
             )
-
-        # Compute uncertainties
-        compute_uncertainties_weighted(
-            self._num_players,
-            self._player_offsets,
-            self._pd_days,
-            self._pd_r,
-            self._pd_uncertainty,
-            self._pd_game_offsets,
-            self._pd_game_opp_pd,
-            self._pd_game_score,
-            self._pd_game_weights,
-            self._w2_r,
-        )
+            compute_uncertainties_weighted(
+                self._num_players,
+                self._player_offsets,
+                self._pd_days,
+                self._pd_r,
+                self._pd_uncertainty,
+                self._pd_game_offsets,
+                self._pd_game_opp_pd,
+                self._pd_game_score,
+                self._pd_game_weights,
+                self._w2_r,
+            )
 
     def _extract_current_ratings(self) -> None:
         """Extract most recent ratings for each player."""
@@ -327,6 +419,7 @@ class WeightedWHR(RatingSystem):
             self._stored_days,
             self._stored_weights,
             self._num_players,
+            handicaps=self._stored_handicaps,
         )
 
         # Apply warm start
@@ -349,6 +442,7 @@ class WeightedWHR(RatingSystem):
         self,
         dataset: GameDataset,
         weights: Optional[np.ndarray] = None,
+        handicaps: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "WeightedWHR":
@@ -358,6 +452,8 @@ class WeightedWHR(RatingSystem):
         Args:
             dataset: Game dataset to fit on
             weights: Per-game weights (None = all 1.0)
+            handicaps: Per-game handicap for player 1 (log-gamma scale).
+                       Positive = player 1 advantage. If None, no handicaps.
             end_day: Last day to include (inclusive)
             player_names: Optional mapping of player_id -> name
 
@@ -401,9 +497,13 @@ class WeightedWHR(RatingSystem):
         self._stored_scores = scores.copy()
         self._stored_days = days
         self._stored_weights = weights.copy()
+        self._stored_handicaps = handicaps.copy() if handicaps is not None else None
 
         # Build data structures and optimize
-        self._build_data_structures(player1, player2, scores, days, weights, self._num_players)
+        self._build_data_structures(
+            player1, player2, scores, days, weights, self._num_players,
+            handicaps=handicaps,
+        )
         self._run_optimization()
         self._extract_current_ratings()
 
@@ -413,27 +513,40 @@ class WeightedWHR(RatingSystem):
 
         return self
 
-    def update_weighted(self, batch: GameBatch, weights: np.ndarray) -> "WeightedWHR":
-        """Update with new weighted games by refitting on all data."""
+    def update_weighted(
+        self,
+        batch: GameBatch,
+        weights: np.ndarray,
+        handicaps: Optional[np.ndarray] = None,
+    ) -> "WeightedWHR":
+        """Update with new weighted games (and optional handicaps) by refitting on all data."""
         if not self._fitted:
             raise ValueError("Model must be fitted before updating")
+
+        n = len(batch)
+        h = handicaps if handicaps is not None else np.zeros(n, dtype=np.float64)
 
         # Append new data
         if self._stored_player1 is None:
             self._stored_player1 = batch.player1.copy()
             self._stored_player2 = batch.player2.copy()
             self._stored_scores = batch.scores.copy()
-            self._stored_days = np.full(len(batch), batch.day, dtype=np.int32)
+            self._stored_days = np.full(n, batch.day, dtype=np.int32)
             self._stored_weights = weights.copy()
+            self._stored_handicaps = h.copy()
             self._last_refit_day = batch.day
         else:
             self._stored_player1 = np.concatenate([self._stored_player1, batch.player1])
             self._stored_player2 = np.concatenate([self._stored_player2, batch.player2])
             self._stored_scores = np.concatenate([self._stored_scores, batch.scores])
             self._stored_days = np.concatenate(
-                [self._stored_days, np.full(len(batch), batch.day, dtype=np.int32)]
+                [self._stored_days, np.full(n, batch.day, dtype=np.int32)]
             )
             self._stored_weights = np.concatenate([self._stored_weights, weights])
+            if self._stored_handicaps is not None:
+                self._stored_handicaps = np.concatenate([self._stored_handicaps, h])
+            else:
+                self._stored_handicaps = h.copy()
 
         # Check if it's time to refit
         if self._last_refit_day is None:
@@ -459,16 +572,19 @@ class WeightedWHR(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        handicaps: Optional[Union[float, np.ndarray]] = None,
         day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """Predict probability that player1 beats player2.
 
-        When day is provided, uses damped sigmoid for Wiener drift.
+        When handicaps are provided, they shift the Bradley-Terry probability
+        on the log-gamma scale (positive = player1 advantage).
+        When day is provided (without handicaps), uses damped sigmoid for Wiener drift.
         """
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
 
-        if day is not None and self._player_last_day is not None:
+        if day is not None and handicaps is None and self._player_last_day is not None:
             if isinstance(player1, (int, np.integer)) and isinstance(
                 player2, (int, np.integer)
             ):
@@ -484,6 +600,21 @@ class WeightedWHR(RatingSystem):
             return predict_proba_batch_at_day(
                 p1, p2, self._ratings.ratings,
                 self._player_last_day, day, self.config.w2,
+            )
+
+        if handicaps is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(
+                player2, (int, np.integer)
+            ):
+                r1 = (self._ratings.ratings[int(player1)] - 1500.0) * LN10_400
+                r2 = (self._ratings.ratings[int(player2)] - 1500.0) * LN10_400
+                h = float(handicaps)
+                return 1.0 / (1.0 + np.exp(-(r1 - r2 + h)))
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+            return _predict_proba_batch_h(
+                p1, p2, self._ratings.ratings, h,
             )
 
         if isinstance(player1, (int, np.integer)) and isinstance(
@@ -554,12 +685,16 @@ class WeightedWHR(RatingSystem):
             "pd_game_weights": self._pd_game_weights,
             "pd_to_player": self._pd_to_player,
         }
+        if self._pd_game_handicaps is not None:
+            arrays["pd_game_handicaps"] = self._pd_game_handicaps
         if self._stored_player1 is not None:
             arrays["stored_player1"] = self._stored_player1
             arrays["stored_player2"] = self._stored_player2
             arrays["stored_scores"] = self._stored_scores
             arrays["stored_days"] = self._stored_days
             arrays["stored_weights"] = self._stored_weights
+        if self._stored_handicaps is not None:
+            arrays["stored_handicaps"] = self._stored_handicaps
 
         metadata = {
             "system_class": "WeightedWHR",
@@ -599,6 +734,7 @@ class WeightedWHR(RatingSystem):
         self._pd_game_opp_pd = arrays.get("pd_game_opp_pd")
         self._pd_game_score = arrays.get("pd_game_score")
         self._pd_game_weights = arrays.get("pd_game_weights")
+        self._pd_game_handicaps = arrays.get("pd_game_handicaps")
         self._pd_to_player = arrays.get("pd_to_player")
 
         if "stored_player1" in arrays:
@@ -607,6 +743,7 @@ class WeightedWHR(RatingSystem):
             self._stored_scores = arrays["stored_scores"]
             self._stored_days = arrays["stored_days"]
             self._stored_weights = arrays.get("stored_weights")
+        self._stored_handicaps = arrays.get("stored_handicaps")
 
         # Cache last active day per player for time-aware predictions
         self._player_last_day = extract_player_last_day(
@@ -623,12 +760,14 @@ class WeightedWHR(RatingSystem):
         self._pd_game_opp_pd = None
         self._pd_game_score = None
         self._pd_game_weights = None
+        self._pd_game_handicaps = None
         self._pd_to_player = None
         self._stored_player1 = None
         self._stored_player2 = None
         self._stored_scores = None
         self._stored_days = None
         self._stored_weights = None
+        self._stored_handicaps = None
         self._last_refit_day = None
         self._num_games_fitted = 0
         self._num_iterations = 0

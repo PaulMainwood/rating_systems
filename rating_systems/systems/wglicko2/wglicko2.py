@@ -19,9 +19,13 @@ from ...data import GameBatch, GameDataset
 from ...results.fitted_ratings import FittedGlicko2Ratings
 from ._numba_core import (
     update_ratings_batch_weighted,
+    update_ratings_batch_weighted_h,
     fit_all_days_weighted,
+    fit_all_days_weighted_h,
     predict_proba_batch,
+    predict_proba_batch_h,
     predict_single,
+    predict_single_h,
     predict_proba_batch_at_day,
     predict_single_at_day,
     get_top_n_indices,
@@ -132,13 +136,20 @@ class WGlicko2(RatingSystem):
         )
         self._num_games_fitted += len(batch)
 
-    def update_weighted(self, batch: GameBatch, weights: np.ndarray) -> "WGlicko2":
+    def update_weighted(
+        self,
+        batch: GameBatch,
+        weights: np.ndarray,
+        handicaps: Optional[np.ndarray] = None,
+    ) -> "WGlicko2":
         """
-        Incrementally update ratings with per-game weights.
+        Incrementally update ratings with per-game weights and optional handicaps.
 
         Args:
             batch: Games to process
             weights: Per-game weights array (same length as batch)
+            handicaps: Per-game handicap for player 1 (Glicko-2 mu scale).
+                       Positive = player 1 advantage. If None, all zero.
 
         Returns:
             self (for method chaining)
@@ -150,20 +161,39 @@ class WGlicko2(RatingSystem):
             return self
 
         weights = np.ascontiguousarray(weights, dtype=np.float64)
-        update_ratings_batch_weighted(
-            batch.player1,
-            batch.player2,
-            batch.scores,
-            weights,
-            self._ratings.ratings,  # mu
-            self._ratings.rd,       # phi
-            self._ratings.volatility,
-            self._ratings.last_played,
-            batch.day,
-            self.config.tau,
-            self.config.epsilon,
-            self.config.max_rd / self.config.scale,  # max_phi
-        )
+
+        if handicaps is not None:
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+            update_ratings_batch_weighted_h(
+                batch.player1,
+                batch.player2,
+                batch.scores,
+                weights,
+                h,
+                self._ratings.ratings,  # mu
+                self._ratings.rd,       # phi
+                self._ratings.volatility,
+                self._ratings.last_played,
+                batch.day,
+                self.config.tau,
+                self.config.epsilon,
+                self.config.max_rd / self.config.scale,  # max_phi
+            )
+        else:
+            update_ratings_batch_weighted(
+                batch.player1,
+                batch.player2,
+                batch.scores,
+                weights,
+                self._ratings.ratings,  # mu
+                self._ratings.rd,       # phi
+                self._ratings.volatility,
+                self._ratings.last_played,
+                batch.day,
+                self.config.tau,
+                self.config.epsilon,
+                self.config.max_rd / self.config.scale,  # max_phi
+            )
         self._num_games_fitted += len(batch)
         self._current_day = batch.day
         return self
@@ -172,12 +202,14 @@ class WGlicko2(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
+        handicaps: Optional[Union[float, np.ndarray]] = None,
         day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """
         Predict probability that player1 beats player2.
 
-        Prediction is identical to standard Glicko-2 - weights only affect updates.
+        When handicaps are provided, they shift the expected score on the
+        Glicko-2 mu scale (positive = player1 advantage).
         When day is provided, grows phi forward using volatility.
         """
         if self._ratings is None:
@@ -185,7 +217,7 @@ class WGlicko2(RatingSystem):
 
         max_phi = self.config.max_rd / self.config.scale
 
-        if day is not None:
+        if day is not None and handicaps is None:
             if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
                 p1, p2 = int(player1), int(player2)
                 return predict_single_at_day(
@@ -201,6 +233,22 @@ class WGlicko2(RatingSystem):
                 p1, p2, self._ratings.ratings, self._ratings.rd,
                 self._ratings.volatility, self._ratings.last_played,
                 day, max_phi,
+            )
+
+        if handicaps is not None:
+            if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
+                p1, p2 = int(player1), int(player2)
+                h = 0.0 if handicaps is None else float(handicaps)
+                return predict_single_h(
+                    self._ratings.ratings[p1], self._ratings.rd[p1],
+                    self._ratings.ratings[p2], self._ratings.rd[p2],
+                    h,
+                )
+            p1 = np.ascontiguousarray(player1, dtype=np.int64)
+            p2 = np.ascontiguousarray(player2, dtype=np.int64)
+            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+            return predict_proba_batch_h(
+                p1, p2, self._ratings.ratings, self._ratings.rd, h,
             )
 
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
@@ -222,15 +270,18 @@ class WGlicko2(RatingSystem):
         self,
         dataset: GameDataset,
         weights: Optional[np.ndarray] = None,
+        handicaps: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "WGlicko2":
         """
-        Fit the rating system on a dataset with optional per-game weights.
+        Fit the rating system on a dataset with optional per-game weights and handicaps.
 
         Args:
             dataset: Game dataset to fit on
             weights: Per-game weights array. If None, all default to 1.0.
+            handicaps: Per-game handicap for player 1 (Glicko-2 mu scale).
+                       Positive = player 1 advantage. If None, all zero.
             end_day: Last day to include (inclusive). Cannot be used with weights.
             player_names: Optional mapping of player_id -> name
 
@@ -260,21 +311,31 @@ class WGlicko2(RatingSystem):
             else:
                 w = np.ascontiguousarray(weights, dtype=np.float64)
 
-            fit_all_days_weighted(
-                player1,
-                player2,
-                scores,
-                w,
-                day_indices,
-                day_offsets,
-                self._ratings.ratings,      # mu
-                self._ratings.rd,           # phi
-                self._ratings.volatility,
-                self._ratings.last_played,
-                self.config.tau,
-                self.config.epsilon,
-                self.config.max_rd / self.config.scale,  # max_phi
-            )
+            if handicaps is not None:
+                h = np.ascontiguousarray(handicaps, dtype=np.float64)
+                fit_all_days_weighted_h(
+                    player1, player2, scores, w, h,
+                    day_indices, day_offsets,
+                    self._ratings.ratings,
+                    self._ratings.rd,
+                    self._ratings.volatility,
+                    self._ratings.last_played,
+                    self.config.tau,
+                    self.config.epsilon,
+                    self.config.max_rd / self.config.scale,
+                )
+            else:
+                fit_all_days_weighted(
+                    player1, player2, scores, w,
+                    day_indices, day_offsets,
+                    self._ratings.ratings,
+                    self._ratings.rd,
+                    self._ratings.volatility,
+                    self._ratings.last_played,
+                    self.config.tau,
+                    self.config.epsilon,
+                    self.config.max_rd / self.config.scale,
+                )
             self._num_games_fitted = len(player1)
             self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
         else:
