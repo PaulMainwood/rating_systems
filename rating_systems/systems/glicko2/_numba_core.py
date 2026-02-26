@@ -80,7 +80,10 @@ def _update_volatility(
     max_iterations = 100
 
     while abs(B - A) > epsilon and iterations < max_iterations:
-        C = A + (A - B) * f_A / (f_B - f_A)
+        denom = f_B - f_A
+        if abs(denom) < 1e-30:
+            break
+        C = A + (A - B) * f_A / denom
 
         ex_C = math.exp(C)
         num1_C = ex_C * (delta_sq - phi_sq - v - ex_C)
