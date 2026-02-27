@@ -226,6 +226,23 @@ class RatingSystem(ABC):
             raise ValueError("No ratings available. Call fit() first.")
         return self._ratings.clone()
 
+    def snapshot(self) -> dict:
+        """Lightweight in-memory copy of fitted state."""
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before snapshotting.")
+        return {
+            "ratings": self._ratings.clone(),
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+        }
+
+    def restore(self, state: dict) -> None:
+        """Restore from in-memory snapshot."""
+        self._num_players = state["num_players"]
+        self._current_day = state["current_day"]
+        self._fitted = True
+        self._ratings = state["ratings"].clone()  # clone again for independence
+
     def save_state(self, path: str) -> None:
         """Save fitted system state to .npz file.
 

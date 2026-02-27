@@ -199,6 +199,58 @@ def compute_game_likelihoods(
 
 
 # =============================================================================
+# Game likelihood with handicap
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def compute_game_likelihoods_h(
+    p1_mu: float, p1_sigma: float,
+    p2_mu: float, p2_sigma: float,
+    p1_wins: bool,
+    beta: float,
+    handicap: float,
+) -> tuple:
+    """
+    Compute likelihood messages with handicap shift (positive = p1 advantage).
+
+    Adds handicap (in mu-scale) to the performance difference before
+    truncation. Otherwise identical to compute_game_likelihoods().
+    """
+    perf1_sigma = math.sqrt(p1_sigma * p1_sigma + beta * beta)
+    perf2_sigma = math.sqrt(p2_sigma * p2_sigma + beta * beta)
+
+    # Handicap favours p1: add h before winner-flip
+    if p1_wins:
+        diff_mu = (p1_mu - p2_mu) + handicap
+    else:
+        diff_mu = (p2_mu - p1_mu) - handicap
+    diff_sigma = math.sqrt(perf1_sigma * perf1_sigma + perf2_sigma * perf2_sigma)
+
+    mu_trunc, sigma_trunc = trunc(diff_mu, diff_sigma, 0.0, True)
+
+    if abs(diff_sigma - sigma_trunc) < 1e-10:
+        return 0.0, INF_SIGMA, 0.0, INF_SIGMA
+
+    diff_var = diff_sigma * diff_sigma
+    trunc_var = sigma_trunc * sigma_trunc
+
+    delta_div = (diff_var * mu_trunc - trunc_var * diff_mu) / (diff_var - trunc_var)
+    theta_div_sq = (trunc_var * diff_var) / (diff_var - trunc_var)
+
+    lik1_sigma = math.sqrt(theta_div_sq + diff_var - p1_sigma * p1_sigma)
+    lik2_sigma = math.sqrt(theta_div_sq + diff_var - p2_sigma * p2_sigma)
+
+    if p1_wins:
+        lik1_mu = p1_mu + (delta_div - diff_mu)
+        lik2_mu = p2_mu - (delta_div - diff_mu)
+    else:
+        lik1_mu = p1_mu - (delta_div - diff_mu)
+        lik2_mu = p2_mu + (delta_div - diff_mu)
+
+    return lik1_mu, lik1_sigma, lik2_mu, lik2_sigma
+
+
+# =============================================================================
 # Batch game processing (unchanged - works with temp arrays by player_id)
 # =============================================================================
 
@@ -897,6 +949,127 @@ def predict_single_at_day(
     sigma2_eff = math.sqrt(sigma2 * sigma2 + gamma * gamma * dt2)
 
     diff_mu = mu1 - mu2
+    diff_sigma = math.sqrt(sigma1_eff * sigma1_eff + sigma2_eff * sigma2_eff + 2.0 * beta * beta)
+    return norm_cdf(diff_mu / diff_sigma)
+
+
+# =============================================================================
+# Prediction functions with handicap
+# =============================================================================
+
+@njit(cache=True, parallel=True)
+def predict_proba_batch_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    rd: np.ndarray,
+    handicaps: np.ndarray,
+    beta: float,
+    display_scale: float,
+    display_offset: float,
+) -> np.ndarray:
+    """Predict with per-game handicaps (mu-scale, positive = p1 advantage)."""
+    n = len(player1)
+    result = np.empty(n, dtype=np.float64)
+
+    for i in prange(n):
+        p1, p2 = player1[i], player2[i]
+        mu1 = (ratings[p1] - display_offset) / display_scale
+        mu2 = (ratings[p2] - display_offset) / display_scale
+        sigma1 = rd[p1] / display_scale
+        sigma2 = rd[p2] / display_scale
+        diff_mu = mu1 - mu2 + handicaps[i]
+        diff_sigma = math.sqrt(sigma1*sigma1 + sigma2*sigma2 + 2.0*beta*beta)
+        result[i] = norm_cdf(diff_mu / diff_sigma)
+
+    return result
+
+
+@njit(cache=True)
+def predict_single_h(
+    rating1: float,
+    rating2: float,
+    rd1: float,
+    rd2: float,
+    handicap: float,
+    beta: float,
+    display_scale: float,
+    display_offset: float,
+) -> float:
+    """Predict with handicap (mu-scale, positive = p1 advantage)."""
+    mu1 = (rating1 - display_offset) / display_scale
+    mu2 = (rating2 - display_offset) / display_scale
+    sigma1 = rd1 / display_scale
+    sigma2 = rd2 / display_scale
+    diff_mu = mu1 - mu2 + handicap
+    diff_sigma = math.sqrt(sigma1*sigma1 + sigma2*sigma2 + 2.0*beta*beta)
+    return norm_cdf(diff_mu / diff_sigma)
+
+
+@njit(cache=True, parallel=True)
+def predict_proba_batch_at_day_h(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    ratings: np.ndarray,
+    rd: np.ndarray,
+    handicaps: np.ndarray,
+    player_last_day: np.ndarray,
+    day: int,
+    beta: float,
+    gamma: float,
+    display_scale: float,
+    display_offset: float,
+) -> np.ndarray:
+    """Predict with handicaps and sigma grown forward for inactivity."""
+    n = len(player1)
+    result = np.empty(n, dtype=np.float64)
+
+    for i in prange(n):
+        p1, p2 = player1[i], player2[i]
+        mu1 = (ratings[p1] - display_offset) / display_scale
+        mu2 = (ratings[p2] - display_offset) / display_scale
+        sigma1 = rd[p1] / display_scale
+        sigma2 = rd[p2] / display_scale
+
+        dt1 = max(0, day - player_last_day[p1])
+        dt2 = max(0, day - player_last_day[p2])
+        sigma1_eff = math.sqrt(sigma1 * sigma1 + gamma * gamma * dt1)
+        sigma2_eff = math.sqrt(sigma2 * sigma2 + gamma * gamma * dt2)
+
+        diff_mu = mu1 - mu2 + handicaps[i]
+        diff_sigma = math.sqrt(sigma1_eff * sigma1_eff + sigma2_eff * sigma2_eff + 2.0 * beta * beta)
+        result[i] = norm_cdf(diff_mu / diff_sigma)
+
+    return result
+
+
+@njit(cache=True)
+def predict_single_at_day_h(
+    rating1: float,
+    rating2: float,
+    rd1: float,
+    rd2: float,
+    handicap: float,
+    last_day1: int,
+    last_day2: int,
+    day: int,
+    beta: float,
+    gamma: float,
+    display_scale: float,
+    display_offset: float,
+) -> float:
+    """Predict single with handicap and sigma grown forward."""
+    mu1 = (rating1 - display_offset) / display_scale
+    mu2 = (rating2 - display_offset) / display_scale
+    sigma1 = rd1 / display_scale
+    sigma2 = rd2 / display_scale
+
+    dt1 = max(0, day - last_day1)
+    dt2 = max(0, day - last_day2)
+    sigma1_eff = math.sqrt(sigma1 * sigma1 + gamma * gamma * dt1)
+    sigma2_eff = math.sqrt(sigma2 * sigma2 + gamma * gamma * dt2)
+
+    diff_mu = mu1 - mu2 + handicap
     diff_sigma = math.sqrt(sigma1_eff * sigma1_eff + sigma2_eff * sigma2_eff + 2.0 * beta * beta)
     return norm_cdf(diff_mu / diff_sigma)
 
