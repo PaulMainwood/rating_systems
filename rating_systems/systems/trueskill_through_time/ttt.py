@@ -697,6 +697,72 @@ class TrueSkillThroughTime(RatingSystem):
 
         self._num_games_fitted = len(player1)
 
+    def snapshot(self) -> dict:
+        """Snapshot full TTT state including message-passing structures.
+
+        The base class snapshot only saves ratings/num_players/current_day,
+        losing the sparse appearance structures and state arrays that TTT
+        needs for correct warm-start refits during walk-forward.
+        """
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before snapshotting.")
+        state = {
+            "ratings": self._ratings.clone(),
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_batches": self._num_batches,
+            "num_appearances": self._num_appearances,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+            "last_refit_day": self._last_refit_day,
+        }
+        for attr in (
+            "_state_forward_mu", "_state_forward_sigma",
+            "_state_backward_mu", "_state_backward_sigma",
+            "_state_likelihood_mu", "_state_likelihood_sigma",
+            "_app_offsets", "_app_player", "_app_prev", "_app_next",
+            "_app_batch", "_player_last_app", "_player_last_day",
+            "_batch_offsets", "_batch_times",
+            "_game_p1", "_game_p2", "_game_scores",
+            "_stored_player1", "_stored_player2", "_stored_scores",
+        ):
+            val = getattr(self, attr)
+            state[attr] = val.copy() if val is not None else None
+        # Accumulated data (lists of arrays)
+        state["_accum_p1"] = [a.copy() for a in self._accum_p1]
+        state["_accum_p2"] = [a.copy() for a in self._accum_p2]
+        state["_accum_scores"] = [a.copy() for a in self._accum_scores]
+        state["_accum_days"] = [a.copy() for a in self._accum_days]
+        return state
+
+    def restore(self, state: dict) -> None:
+        """Restore full TTT state from snapshot."""
+        self._num_players = state["num_players"]
+        self._current_day = state["current_day"]
+        self._num_batches = state["num_batches"]
+        self._num_appearances = state["num_appearances"]
+        self._num_games_fitted = state["num_games_fitted"]
+        self._num_iterations = state["num_iterations"]
+        self._last_refit_day = state["last_refit_day"]
+        self._fitted = True
+        self._ratings = state["ratings"].clone()
+        for attr in (
+            "_state_forward_mu", "_state_forward_sigma",
+            "_state_backward_mu", "_state_backward_sigma",
+            "_state_likelihood_mu", "_state_likelihood_sigma",
+            "_app_offsets", "_app_player", "_app_prev", "_app_next",
+            "_app_batch", "_player_last_app", "_player_last_day",
+            "_batch_offsets", "_batch_times",
+            "_game_p1", "_game_p2", "_game_scores",
+            "_stored_player1", "_stored_player2", "_stored_scores",
+        ):
+            val = state[attr]
+            setattr(self, attr, val.copy() if val is not None else None)
+        self._accum_p1 = [a.copy() for a in state["_accum_p1"]]
+        self._accum_p2 = [a.copy() for a in state["_accum_p2"]]
+        self._accum_scores = [a.copy() for a in state["_accum_scores"]]
+        self._accum_days = [a.copy() for a in state["_accum_days"]]
+
     def save_state(self, path: str) -> None:
         """Save fitted TTT state to .npz file.
 

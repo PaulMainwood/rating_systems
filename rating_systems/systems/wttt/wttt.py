@@ -123,6 +123,8 @@ class WeightedTTT(RatingSystem):
         self._game_beta_eff: Optional[np.ndarray] = None
         # Per-game handicaps (mu-scale, positive = p1 advantage)
         self._game_handicaps: Optional[np.ndarray] = None
+        # Per-appearance gamma for volatility modulation
+        self._app_gamma: Optional[np.ndarray] = None
 
         # Sparse appearance structures
         self._num_appearances = 0
@@ -255,6 +257,9 @@ class WeightedTTT(RatingSystem):
 
         self._ensure_temp_arrays()
 
+        self._app_gamma = np.full(self._num_appearances, self.config.gamma,
+                                   dtype=np.float64)
+
     def fit(
         self,
         dataset: GameDataset,
@@ -349,7 +354,7 @@ class WeightedTTT(RatingSystem):
                 self.config.sigma,
                 self._game_beta_eff,
                 self._game_handicaps,
-                self.config.gamma,
+                self._app_gamma,
                 0,  # start_batch
             )
         else:
@@ -380,7 +385,7 @@ class WeightedTTT(RatingSystem):
                 self.config.mu,
                 self.config.sigma,
                 self._game_beta_eff,
-                self.config.gamma,
+                self._app_gamma,
                 0,  # start_batch
             )
 
@@ -415,7 +420,7 @@ class WeightedTTT(RatingSystem):
                 self.config.sigma,
                 self._game_beta_eff,
                 self._game_handicaps,
-                self.config.gamma,
+                self._app_gamma,
                 self.config.max_iterations,
                 self.config.convergence_threshold,
             )
@@ -448,7 +453,7 @@ class WeightedTTT(RatingSystem):
                 self.config.mu,
                 self.config.sigma,
                 self._game_beta_eff,
-                self.config.gamma,
+                self._app_gamma,
                 self.config.max_iterations,
                 self.config.convergence_threshold,
             )
@@ -672,6 +677,10 @@ class WeightedTTT(RatingSystem):
         self._accum_weights.append(np.asarray(weights, dtype=np.float64).copy())
 
         if handicaps is not None:
+            if not self._accum_handicaps:
+                # fit() was called without handicaps — pad zeros for prior batches
+                for p1_arr in self._accum_p1[:-1]:
+                    self._accum_handicaps.append(np.zeros(len(p1_arr), dtype=np.float64))
             self._accum_handicaps.append(np.asarray(handicaps, dtype=np.float64).copy())
         elif self._accum_handicaps:
             # Previous batches had handicaps — fill zeros for consistency
@@ -765,7 +774,7 @@ class WeightedTTT(RatingSystem):
                 self.config.sigma,
                 self._game_beta_eff,
                 self._game_handicaps,
-                self.config.gamma,
+                self._app_gamma,
                 old_num_batches,  # start_batch
             )
         else:
@@ -796,7 +805,7 @@ class WeightedTTT(RatingSystem):
                 self.config.mu,
                 self.config.sigma,
                 self._game_beta_eff,
-                self.config.gamma,
+                self._app_gamma,
                 old_num_batches,  # start_batch
             )
 
@@ -831,7 +840,7 @@ class WeightedTTT(RatingSystem):
                 self.config.sigma,
                 self._game_beta_eff,
                 self._game_handicaps,
-                self.config.gamma,
+                self._app_gamma,
                 self.config.refit_max_iterations,
                 self.config.convergence_threshold,
             )
@@ -864,7 +873,7 @@ class WeightedTTT(RatingSystem):
                 self.config.mu,
                 self.config.sigma,
                 self._game_beta_eff,
-                self.config.gamma,
+                self._app_gamma,
                 self.config.refit_max_iterations,
                 self.config.convergence_threshold,
             )
@@ -899,6 +908,76 @@ class WeightedTTT(RatingSystem):
 
         self._num_games_fitted = len(player1)
 
+    def snapshot(self) -> dict:
+        """Snapshot full WTTT state including message-passing structures.
+
+        The base class snapshot only saves ratings/num_players/current_day,
+        losing the sparse appearance structures and state arrays that WTTT
+        needs for correct warm-start refits during walk-forward.
+        """
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before snapshotting.")
+        state = {
+            "ratings": self._ratings.clone(),
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_batches": self._num_batches,
+            "num_appearances": self._num_appearances,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+            "last_refit_day": self._last_refit_day,
+        }
+        for attr in (
+            "_state_forward_mu", "_state_forward_sigma",
+            "_state_backward_mu", "_state_backward_sigma",
+            "_state_likelihood_mu", "_state_likelihood_sigma",
+            "_app_offsets", "_app_player", "_app_prev", "_app_next",
+            "_app_batch", "_player_last_app", "_player_last_day",
+            "_batch_offsets", "_batch_times",
+            "_game_p1", "_game_p2", "_game_scores",
+            "_game_beta_eff", "_game_handicaps", "_app_gamma",
+        ):
+            val = getattr(self, attr)
+            state[attr] = val.copy() if val is not None else None
+        # Accumulated data (lists of arrays)
+        state["_accum_p1"] = [a.copy() for a in self._accum_p1]
+        state["_accum_p2"] = [a.copy() for a in self._accum_p2]
+        state["_accum_scores"] = [a.copy() for a in self._accum_scores]
+        state["_accum_days"] = [a.copy() for a in self._accum_days]
+        state["_accum_weights"] = [a.copy() for a in self._accum_weights]
+        state["_accum_handicaps"] = [a.copy() for a in self._accum_handicaps]
+        return state
+
+    def restore(self, state: dict) -> None:
+        """Restore full WTTT state from snapshot."""
+        self._num_players = state["num_players"]
+        self._current_day = state["current_day"]
+        self._num_batches = state["num_batches"]
+        self._num_appearances = state["num_appearances"]
+        self._num_games_fitted = state["num_games_fitted"]
+        self._num_iterations = state["num_iterations"]
+        self._last_refit_day = state["last_refit_day"]
+        self._fitted = True
+        self._ratings = state["ratings"].clone()
+        for attr in (
+            "_state_forward_mu", "_state_forward_sigma",
+            "_state_backward_mu", "_state_backward_sigma",
+            "_state_likelihood_mu", "_state_likelihood_sigma",
+            "_app_offsets", "_app_player", "_app_prev", "_app_next",
+            "_app_batch", "_player_last_app", "_player_last_day",
+            "_batch_offsets", "_batch_times",
+            "_game_p1", "_game_p2", "_game_scores",
+            "_game_beta_eff", "_game_handicaps", "_app_gamma",
+        ):
+            val = state[attr]
+            setattr(self, attr, val.copy() if val is not None else None)
+        self._accum_p1 = [a.copy() for a in state["_accum_p1"]]
+        self._accum_p2 = [a.copy() for a in state["_accum_p2"]]
+        self._accum_scores = [a.copy() for a in state["_accum_scores"]]
+        self._accum_days = [a.copy() for a in state["_accum_days"]]
+        self._accum_weights = [a.copy() for a in state["_accum_weights"]]
+        self._accum_handicaps = [a.copy() for a in state["_accum_handicaps"]]
+
     def save_state(self, path: str) -> None:
         """Save fitted WTTT state to .npz file."""
         if not self._fitted or self._state_forward_mu is None:
@@ -930,6 +1009,8 @@ class WeightedTTT(RatingSystem):
             "game_scores": self._game_scores,
             "game_beta_eff": self._game_beta_eff,
         }
+        if self._app_gamma is not None:
+            arrays["app_gamma"] = self._app_gamma
         if self._game_handicaps is not None:
             arrays["game_handicaps"] = self._game_handicaps
 
@@ -994,6 +1075,11 @@ class WeightedTTT(RatingSystem):
         self._game_scores = arrays["game_scores"]
         self._game_beta_eff = arrays.get("game_beta_eff")
         self._game_handicaps = arrays.get("game_handicaps")
+        self._app_gamma = arrays.get("app_gamma")
+        if self._app_gamma is None and self._num_appearances > 0:
+            # Backward compat: old checkpoint without app_gamma
+            self._app_gamma = np.full(self._num_appearances, self.config.gamma,
+                                       dtype=np.float64)
 
         # Reconstruct per-game days from batch structure
         days = np.empty(len(self._game_p1), dtype=np.int32)
@@ -1028,6 +1114,7 @@ class WeightedTTT(RatingSystem):
         self._game_scores = None
         self._game_beta_eff = None
         self._game_handicaps = None
+        self._app_gamma = None
         self._num_appearances = 0
         self._app_offsets = None
         self._app_player = None

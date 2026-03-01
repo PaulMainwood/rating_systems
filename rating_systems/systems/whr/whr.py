@@ -596,6 +596,55 @@ class WHR(RatingSystem):
             raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
+    def snapshot(self) -> dict:
+        """Snapshot full WHR state including CSR structures.
+
+        The base class snapshot only saves ratings/num_players/current_day,
+        losing the CSR player-day structures that WHR needs for correct
+        warm-start refits during walk-forward.  Without these, update()
+        refits without training history, producing divergent predictions.
+        """
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before snapshotting.")
+        state = {
+            "ratings": self._ratings.clone(),
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+            "last_refit_day": self._last_refit_day,
+        }
+        # CSR structures and stored game data
+        for attr in (
+            "_pd_r", "_pd_days", "_player_offsets", "_pd_uncertainty",
+            "_pd_game_offsets", "_pd_game_opp_pd", "_pd_game_score",
+            "_pd_to_player", "_player_last_day",
+            "_stored_player1", "_stored_player2",
+            "_stored_scores", "_stored_days",
+        ):
+            val = getattr(self, attr)
+            state[attr] = val.copy() if val is not None else None
+        return state
+
+    def restore(self, state: dict) -> None:
+        """Restore full WHR state from snapshot."""
+        self._num_players = state["num_players"]
+        self._current_day = state["current_day"]
+        self._num_games_fitted = state["num_games_fitted"]
+        self._num_iterations = state["num_iterations"]
+        self._last_refit_day = state["last_refit_day"]
+        self._fitted = True
+        self._ratings = state["ratings"].clone()
+        for attr in (
+            "_pd_r", "_pd_days", "_player_offsets", "_pd_uncertainty",
+            "_pd_game_offsets", "_pd_game_opp_pd", "_pd_game_score",
+            "_pd_to_player", "_player_last_day",
+            "_stored_player1", "_stored_player2",
+            "_stored_scores", "_stored_days",
+        ):
+            val = state[attr]
+            setattr(self, attr, val.copy() if val is not None else None)
+
     def save_state(self, path: str) -> None:
         """Save fitted WHR state to .npz file.
 

@@ -1,18 +1,22 @@
 """Rating system implementations.
 
 Online systems (incremental updates):
-- Elo: Classic Elo rating system
-- Glicko: Glicko rating system with rating deviation
-- Glicko2: Glicko-2 rating system with volatility
-- Stephenson: Extended Glicko with neighbourhood and bonus parameters
-- TrueSkill: Bayesian skill estimation with Gaussian beliefs
-- Yuksel: Adaptive rating system with uncertainty tracking
+- Elo / WElo: Classic Elo rating system
+- Glicko / WGlicko: Glicko rating system with rating deviation
+- Glicko2 / WGlicko2: Glicko-2 rating system with volatility
+- Stephenson / WStephenson: Extended Glicko with neighbourhood and bonus parameters
+- TrueSkill / WeightedTrueSkill: Bayesian skill estimation with Gaussian beliefs
+- Yuksel / WYuksel: Adaptive rating system with uncertainty tracking
 
 Batch systems (refit on full history):
-- WHR: Whole History Rating
-- TrueSkillThroughTime: TrueSkill Through Time
+- WHR / WeightedWHR: Whole History Rating
+- TrueSkillThroughTime / WeightedTTT: TrueSkill Through Time
 - SurfaceTTT: Surface-specific TrueSkill Through Time
 
+Analysis:
+- HodgeIntransitivity: Hodge decomposition for measuring intransitivity
+
+W* (weighted) variants accept per-game weights for boosted rating updates.
 All implementations use Numba for high performance.
 """
 
@@ -24,7 +28,7 @@ from .stephenson import Stephenson, StephensonConfig
 from .trueskill import TrueSkill, TrueSkillConfig
 from .yuksel import Yuksel, YukselConfig
 
-# Batch systems (keep existing implementations)
+# Batch systems
 from .whr import WHR
 from .welo import WElo, WEloConfig
 from .trueskill_through_time import TrueSkillThroughTime, SurfaceTTT

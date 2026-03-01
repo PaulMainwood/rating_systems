@@ -131,7 +131,7 @@ def initial_forward_pass_weighted(
     prior_mu: float,
     prior_sigma: float,
     game_beta_eff: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
     start_batch: int,
 ) -> None:
     """Forward pass with per-game beta_eff (weighted variant)."""
@@ -154,7 +154,8 @@ def initial_forward_pass_weighted(
                     state_likelihood_mu[prev_a], state_likelihood_sigma[prev_a]
                 )
                 elapsed = batch_time - prev_time
-                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma, elapsed)
+                gamma_eff = 0.5 * (app_gamma[prev_a] + app_gamma[a])
+                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma_eff, elapsed)
                 state_forward_mu[a] = fwd_mu
                 state_forward_sigma[a] = fwd_sigma
 
@@ -212,7 +213,7 @@ def backward_sweep_weighted(
     prior_mu: float,
     prior_sigma: float,
     game_beta_eff: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
 ) -> float:
     """Backward sweep with per-game beta_eff. Returns max change."""
     max_change = 0.0
@@ -237,7 +238,8 @@ def backward_sweep_weighted(
                 )
                 next_time = batch_times[app_batch[next_a]]
                 elapsed = next_time - batch_time
-                bwd_mu, bwd_sigma = gaussian_forget(lik_bwd_mu, lik_bwd_sigma, gamma, elapsed)
+                gamma_eff = 0.5 * (app_gamma[next_a] + app_gamma[a])
+                bwd_mu, bwd_sigma = gaussian_forget(lik_bwd_mu, lik_bwd_sigma, gamma_eff, elapsed)
                 state_backward_mu[a] = bwd_mu
                 state_backward_sigma[a] = bwd_sigma
 
@@ -298,7 +300,7 @@ def forward_sweep_weighted(
     prior_mu: float,
     prior_sigma: float,
     game_beta_eff: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
 ) -> float:
     """Forward sweep with per-game beta_eff. Returns max change."""
     max_change = 0.0
@@ -323,7 +325,8 @@ def forward_sweep_weighted(
                 )
                 prev_time = batch_times[app_batch[prev_a]]
                 elapsed = batch_time - prev_time
-                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma, elapsed)
+                gamma_eff = 0.5 * (app_gamma[prev_a] + app_gamma[a])
+                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma_eff, elapsed)
                 state_forward_mu[a] = fwd_mu
                 state_forward_sigma[a] = fwd_sigma
 
@@ -385,7 +388,7 @@ def run_convergence_weighted(
     prior_mu: float,
     prior_sigma: float,
     game_beta_eff: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
     max_iterations: int,
     epsilon: float,
 ) -> int:
@@ -401,7 +404,7 @@ def run_convergence_weighted(
             temp_fwd_mu, temp_fwd_sigma,
             temp_bwd_mu, temp_bwd_sigma,
             temp_lik_mu, temp_lik_sigma,
-            prior_mu, prior_sigma, game_beta_eff, gamma
+            prior_mu, prior_sigma, game_beta_eff, app_gamma
         )
 
         fwd_change = forward_sweep_weighted(
@@ -414,7 +417,7 @@ def run_convergence_weighted(
             temp_fwd_mu, temp_fwd_sigma,
             temp_bwd_mu, temp_bwd_sigma,
             temp_lik_mu, temp_lik_sigma,
-            prior_mu, prior_sigma, game_beta_eff, gamma
+            prior_mu, prior_sigma, game_beta_eff, app_gamma
         )
 
         max_change = max(bwd_change, fwd_change)
@@ -515,7 +518,7 @@ def initial_forward_pass_weighted_h(
     prior_sigma: float,
     game_beta_eff: np.ndarray,
     game_handicaps: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
     start_batch: int,
 ) -> None:
     """Forward pass with per-game beta_eff and handicaps."""
@@ -538,7 +541,8 @@ def initial_forward_pass_weighted_h(
                     state_likelihood_mu[prev_a], state_likelihood_sigma[prev_a]
                 )
                 elapsed = batch_time - prev_time
-                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma, elapsed)
+                gamma_eff = 0.5 * (app_gamma[prev_a] + app_gamma[a])
+                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma_eff, elapsed)
                 state_forward_mu[a] = fwd_mu
                 state_forward_sigma[a] = fwd_sigma
 
@@ -593,7 +597,7 @@ def backward_sweep_weighted_h(
     prior_sigma: float,
     game_beta_eff: np.ndarray,
     game_handicaps: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
 ) -> float:
     """Backward sweep with per-game beta_eff and handicaps. Returns max change."""
     max_change = 0.0
@@ -618,7 +622,8 @@ def backward_sweep_weighted_h(
                 )
                 next_time = batch_times[app_batch[next_a]]
                 elapsed = next_time - batch_time
-                bwd_mu, bwd_sigma = gaussian_forget(lik_bwd_mu, lik_bwd_sigma, gamma, elapsed)
+                gamma_eff = 0.5 * (app_gamma[next_a] + app_gamma[a])
+                bwd_mu, bwd_sigma = gaussian_forget(lik_bwd_mu, lik_bwd_sigma, gamma_eff, elapsed)
                 state_backward_mu[a] = bwd_mu
                 state_backward_sigma[a] = bwd_sigma
 
@@ -676,7 +681,7 @@ def forward_sweep_weighted_h(
     prior_sigma: float,
     game_beta_eff: np.ndarray,
     game_handicaps: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
 ) -> float:
     """Forward sweep with per-game beta_eff and handicaps. Returns max change."""
     max_change = 0.0
@@ -701,7 +706,8 @@ def forward_sweep_weighted_h(
                 )
                 prev_time = batch_times[app_batch[prev_a]]
                 elapsed = batch_time - prev_time
-                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma, elapsed)
+                gamma_eff = 0.5 * (app_gamma[prev_a] + app_gamma[a])
+                fwd_mu, fwd_sigma = gaussian_forget(fwd_lik_mu, fwd_lik_sigma, gamma_eff, elapsed)
                 state_forward_mu[a] = fwd_mu
                 state_forward_sigma[a] = fwd_sigma
 
@@ -760,7 +766,7 @@ def run_convergence_weighted_h(
     prior_sigma: float,
     game_beta_eff: np.ndarray,
     game_handicaps: np.ndarray,
-    gamma: float,
+    app_gamma: np.ndarray,
     max_iterations: int,
     epsilon: float,
 ) -> int:
@@ -776,7 +782,7 @@ def run_convergence_weighted_h(
             temp_fwd_mu, temp_fwd_sigma,
             temp_bwd_mu, temp_bwd_sigma,
             temp_lik_mu, temp_lik_sigma,
-            prior_mu, prior_sigma, game_beta_eff, game_handicaps, gamma
+            prior_mu, prior_sigma, game_beta_eff, game_handicaps, app_gamma
         )
 
         fwd_change = forward_sweep_weighted_h(
@@ -789,7 +795,7 @@ def run_convergence_weighted_h(
             temp_fwd_mu, temp_fwd_sigma,
             temp_bwd_mu, temp_bwd_sigma,
             temp_lik_mu, temp_lik_sigma,
-            prior_mu, prior_sigma, game_beta_eff, game_handicaps, gamma
+            prior_mu, prior_sigma, game_beta_eff, game_handicaps, app_gamma
         )
 
         max_change = max(bwd_change, fwd_change)
@@ -797,3 +803,5 @@ def run_convergence_weighted_h(
             return iteration + 1
 
     return max_iterations
+
+

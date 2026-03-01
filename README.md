@@ -50,25 +50,32 @@ print(f"Brier Score: {results.brier:.4f}")
 ### Online Systems (Incremental Updates)
 
 These systems can update ratings incrementally as new games arrive.
+Each has a weighted variant (W*) that accepts per-game weights for boosted rating updates.
 
-| System | Description | Key Parameters |
-|--------|-------------|----------------|
-| **Elo** | Classic rating system | `k_factor` (32), `initial_rating` (1500) |
-| **Glicko** | Adds rating deviation (RD) | `initial_rd` (350), `c` (34.6) |
-| **Glicko2** | Adds volatility parameter | `tau` (0.5), `initial_volatility` (0.06) |
-| **Stephenson** | Extended Glicko with neighbourhood parameter | `hval` (10), `lambda_param` (2) |
-| **TrueSkill** | Bayesian skill estimation | `initial_sigma` (8.33), `beta` (4.17) |
-| **Yuksel** | Adaptive with uncertainty tracking | `delta_r_max` (32), `alpha` (0.1) |
+| System | Weighted | Description | Key Parameters |
+|--------|----------|-------------|----------------|
+| **Elo** | WElo | Classic rating system | `k_factor` (32), `initial_rating` (1500) |
+| **Glicko** | WGlicko | Adds rating deviation (RD) | `initial_rd` (350), `c` (34.6) |
+| **Glicko2** | WGlicko2 | Adds volatility parameter | `tau` (0.5), `initial_volatility` (0.06) |
+| **Stephenson** | WStephenson | Extended Glicko with neighbourhood parameter | `hval` (10), `lambda_param` (2) |
+| **TrueSkill** | WeightedTrueSkill | Bayesian skill estimation | `initial_sigma` (8.33), `beta` (4.17) |
+| **Yuksel** | WYuksel | Adaptive with uncertainty tracking | `delta_r_max` (32), `alpha` (0.1) |
 
 ### Batch Systems (Full History Refit)
 
 These systems must refit on all historical data when new games arrive.
 
-| System | Description | Key Parameters |
-|--------|-------------|----------------|
-| **WHR** | Whole History Rating - Bayesian with time-varying skill | `w2` (300), `max_iterations` (50) |
-| **TrueSkillThroughTime** | Gaussian belief propagation | `sigma` (6), `beta` (1), `gamma` (0.03) |
-| **SurfaceTTT** | Surface-specific TTT (e.g., for tennis) | `base_weight` (0.6), `surface_sigma` (3) |
+| System | Weighted | Description | Key Parameters |
+|--------|----------|-------------|----------------|
+| **WHR** | WeightedWHR | Bayesian with time-varying skill | `w2` (300), `max_iterations` (50) |
+| **TrueSkillThroughTime** | WeightedTTT | Gaussian belief propagation | `sigma` (6), `beta` (1), `gamma` (0.03) |
+| **SurfaceTTT** | — | Surface-specific TTT (e.g., for tennis) | `base_weight` (0.6), `surface_sigma` (3) |
+
+### Analysis
+
+| System | Description |
+|--------|-------------|
+| **HodgeIntransitivity** | Hodge decomposition for measuring intransitivity in pairwise results |
 
 ## Data Format
 
@@ -103,7 +110,7 @@ print(comparison)
 
 ```
 rating_systems/
-├── data/           # GameDataset, GameBatch
+├── data/           # GameDataset, GameBatch, checkpoint save/load
 ├── base/           # RatingSystem base class, PlayerRatings
 ├── systems/
 │   ├── elo/        # Elo
@@ -112,10 +119,20 @@ rating_systems/
 │   ├── stephenson/ # Stephenson
 │   ├── trueskill/  # TrueSkill
 │   ├── yuksel/     # Yuksel
+│   ├── welo/       # Weighted Elo
+│   ├── wglicko/    # Weighted Glicko
+│   ├── wglicko2/   # Weighted Glicko-2
+│   ├── wstephenson/# Weighted Stephenson
+│   ├── wtrueskill/ # Weighted TrueSkill
+│   ├── wyuksel/    # Weighted Yuksel
 │   ├── whr/        # Whole History Rating
-│   └── trueskill_through_time/  # TTT and SurfaceTTT
-├── evaluation/     # Backtester, metrics
-└── results/        # FittedRatings classes
+│   ├── wwhr/       # Weighted WHR
+│   ├── trueskill_through_time/  # TTT and SurfaceTTT
+│   ├── wttt/       # Weighted TTT
+│   └── hodge/      # Hodge intransitivity analysis
+├── evaluation/     # Backtester, metrics, optimizer
+├── results/        # FittedRatings classes
+└── cli/            # Command-line interface
 ```
 
 ## License

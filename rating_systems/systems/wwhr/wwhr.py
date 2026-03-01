@@ -155,6 +155,7 @@ class WeightedWHR(RatingSystem):
         self._pd_game_weights: Optional[np.ndarray] = None
         self._pd_game_handicaps: Optional[np.ndarray] = None
         self._pd_to_player: Optional[np.ndarray] = None
+        self._pd_w2_r: Optional[np.ndarray] = None
         self._player_last_day: Optional[np.ndarray] = None
 
         # Metadata
@@ -257,6 +258,8 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_weights,
             )
 
+        self._pd_w2_r = np.full(total_pd, self._w2_r, dtype=np.float64)
+
     def _run_optimization(self, max_iterations: Optional[int] = None) -> None:
         """Run weighted Newton-Raphson optimization."""
         if self._player_offsets is None or self._num_players is None:
@@ -279,7 +282,7 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_score,
                 self._pd_game_weights,
                 self._pd_game_handicaps,
-                self._w2_r,
+                self._pd_w2_r,
                 max_iterations,
                 self.config.convergence_threshold,
                 self.config.anderson_window,
@@ -298,7 +301,7 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_score,
                 self._pd_game_weights,
                 self._pd_game_handicaps,
-                self._w2_r,
+                self._pd_w2_r,
             )
         elif self.config.use_active_set or self.config.anderson_window > 0 or self.config.use_jacobi:
             self._num_iterations = run_all_iterations_accelerated_weighted(
@@ -310,7 +313,7 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_opp_pd,
                 self._pd_game_score,
                 self._pd_game_weights,
-                self._w2_r,
+                self._pd_w2_r,
                 max_iterations,
                 self.config.convergence_threshold,
                 self.config.anderson_window,
@@ -328,7 +331,7 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_opp_pd,
                 self._pd_game_score,
                 self._pd_game_weights,
-                self._w2_r,
+                self._pd_w2_r,
             )
         else:
             self._num_iterations = run_all_iterations_weighted(
@@ -340,7 +343,7 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_opp_pd,
                 self._pd_game_score,
                 self._pd_game_weights,
-                self._w2_r,
+                self._pd_w2_r,
                 max_iterations,
                 self.config.convergence_threshold,
             )
@@ -354,7 +357,7 @@ class WeightedWHR(RatingSystem):
                 self._pd_game_opp_pd,
                 self._pd_game_score,
                 self._pd_game_weights,
-                self._w2_r,
+                self._pd_w2_r,
             )
 
     def _extract_current_ratings(self) -> None:
@@ -546,7 +549,11 @@ class WeightedWHR(RatingSystem):
             if self._stored_handicaps is not None:
                 self._stored_handicaps = np.concatenate([self._stored_handicaps, h])
             else:
-                self._stored_handicaps = h.copy()
+                # fit() was called without handicaps — pad zeros for fit data
+                n_prev = len(self._stored_player1) - n
+                self._stored_handicaps = np.concatenate([
+                    np.zeros(n_prev, dtype=np.float64), h
+                ])
 
         # Check if it's time to refit
         if self._last_refit_day is None:
@@ -667,6 +674,58 @@ class WeightedWHR(RatingSystem):
             raise ValueError("Model not fitted. Call fit() first.")
         return get_top_n_indices(self._ratings.ratings, n)
 
+    def snapshot(self) -> dict:
+        """Snapshot full WWHR state including CSR structures.
+
+        The base class snapshot only saves ratings/num_players/current_day,
+        losing the CSR player-day structures that WWHR needs for correct
+        warm-start refits during walk-forward.  Without these, update_weighted()
+        refits without training history, producing divergent predictions.
+        """
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before snapshotting.")
+        state = {
+            "ratings": self._ratings.clone(),
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+            "last_refit_day": self._last_refit_day,
+        }
+        for attr in (
+            "_pd_r", "_pd_days", "_player_offsets", "_pd_uncertainty",
+            "_pd_game_offsets", "_pd_game_opp_pd", "_pd_game_score",
+            "_pd_game_weights", "_pd_game_handicaps",
+            "_pd_to_player", "_pd_w2_r", "_player_last_day",
+            "_stored_player1", "_stored_player2",
+            "_stored_scores", "_stored_days",
+            "_stored_weights", "_stored_handicaps",
+        ):
+            val = getattr(self, attr)
+            state[attr] = val.copy() if val is not None else None
+        return state
+
+    def restore(self, state: dict) -> None:
+        """Restore full WWHR state from snapshot."""
+        self._num_players = state["num_players"]
+        self._current_day = state["current_day"]
+        self._num_games_fitted = state["num_games_fitted"]
+        self._num_iterations = state["num_iterations"]
+        self._last_refit_day = state["last_refit_day"]
+        self._fitted = True
+        self._ratings = state["ratings"].clone()
+        for attr in (
+            "_pd_r", "_pd_days", "_player_offsets", "_pd_uncertainty",
+            "_pd_game_offsets", "_pd_game_opp_pd", "_pd_game_score",
+            "_pd_game_weights", "_pd_game_handicaps",
+            "_pd_to_player", "_pd_w2_r", "_player_last_day",
+            "_stored_player1", "_stored_player2",
+            "_stored_scores", "_stored_days",
+            "_stored_weights", "_stored_handicaps",
+        ):
+            val = state[attr]
+            setattr(self, attr, val.copy() if val is not None else None)
+
     def save_state(self, path: str) -> None:
         """Save fitted WWHR state to .npz file."""
         if not self._fitted or self._pd_r is None:
@@ -684,6 +743,7 @@ class WeightedWHR(RatingSystem):
             "pd_game_score": self._pd_game_score,
             "pd_game_weights": self._pd_game_weights,
             "pd_to_player": self._pd_to_player,
+            "pd_w2_r": self._pd_w2_r,
         }
         if self._pd_game_handicaps is not None:
             arrays["pd_game_handicaps"] = self._pd_game_handicaps
@@ -736,6 +796,10 @@ class WeightedWHR(RatingSystem):
         self._pd_game_weights = arrays.get("pd_game_weights")
         self._pd_game_handicaps = arrays.get("pd_game_handicaps")
         self._pd_to_player = arrays.get("pd_to_player")
+        self._pd_w2_r = arrays.get("pd_w2_r")
+        if self._pd_w2_r is None and self._pd_r is not None:
+            # Backward compat: old checkpoint without pd_w2_r
+            self._pd_w2_r = np.full(len(self._pd_r), self._w2_r, dtype=np.float64)
 
         if "stored_player1" in arrays:
             self._stored_player1 = arrays["stored_player1"]
@@ -762,6 +826,7 @@ class WeightedWHR(RatingSystem):
         self._pd_game_weights = None
         self._pd_game_handicaps = None
         self._pd_to_player = None
+        self._pd_w2_r = None
         self._stored_player1 = None
         self._stored_player2 = None
         self._stored_scores = None

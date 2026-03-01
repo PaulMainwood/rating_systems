@@ -2,17 +2,23 @@
 Rating Systems - High-performance Numba-accelerated implementations of rating systems.
 
 This package provides modular, Numba-accelerated implementations of popular
-rating systems with support for backtesting and evaluation.
+rating systems with support for backtesting, evaluation, and checkpointing.
 
-Available systems:
-- Elo: Classic Elo rating system
-- Glicko: Glicko rating system with rating deviation
-- Glicko2: Glicko-2 rating system with volatility
-- Stephenson: Extended Glicko with neighbourhood and bonus parameters
-- TrueSkill: Bayesian skill estimation with Gaussian beliefs
-- Yuksel: Adaptive rating system with uncertainty tracking
-- WHR: Whole History Rating (batch)
-- TrueSkillThroughTime: TrueSkill Through Time (batch)
+Available systems (online — incremental updates):
+- Elo / WElo: Classic Elo rating system (weighted variant supports per-game weights)
+- Glicko / WGlicko: Glicko with rating deviation
+- Glicko2 / WGlicko2: Glicko-2 with volatility
+- Stephenson / WStephenson: Extended Glicko with neighbourhood and bonus parameters
+- TrueSkill / WeightedTrueSkill: Bayesian skill estimation with Gaussian beliefs
+- Yuksel / WYuksel: Adaptive rating system with uncertainty tracking
+
+Available systems (batch — full history refit):
+- WHR / WeightedWHR: Whole History Rating
+- TrueSkillThroughTime / WeightedTTT: TrueSkill Through Time
+- SurfaceTTT: Surface-specific TTT (e.g. clay vs non-clay)
+
+Analysis:
+- HodgeIntransitivity: Hodge decomposition for measuring intransitivity
 
 Quick Start:
     from rating_systems import GameDataset, Elo, Glicko, Glicko2, TrueSkill, Backtester
@@ -97,7 +103,15 @@ from .systems import (
     HodgeIntransitivity,
     HodgeConfig,
 )
-from .results import FittedEloRatings, FittedGlickoRatings, FittedTrueSkillRatings, FittedYukselRatings
+from .results import (
+    FittedEloRatings,
+    FittedGlickoRatings,
+    FittedGlicko2Ratings,
+    FittedWHRRatings,
+    FittedTTTRatings,
+    FittedTrueSkillRatings,
+    FittedYukselRatings,
+)
 from .evaluation import (
     Backtester,
     BacktestResult,
@@ -157,6 +171,9 @@ __all__ = [
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",
+    "FittedGlicko2Ratings",
+    "FittedWHRRatings",
+    "FittedTTTRatings",
     "FittedTrueSkillRatings",
     "FittedYukselRatings",
     # Surface constants

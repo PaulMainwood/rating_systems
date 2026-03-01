@@ -131,7 +131,7 @@ def update_single_player_weighted_h(
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
     pd_game_handicaps: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """
     Update a single player's ratings using weighted Newton-Raphson with handicaps.
@@ -157,7 +157,7 @@ def update_single_player_weighted_h(
 
     for i in range(n - 1):
         day_diff = max(1, pd_days[pd_start + i + 1] - pd_days[pd_start + i])
-        sigma2 = w2_r * day_diff
+        sigma2 = 0.5 * (pd_w2_r[pd_start + i] + pd_w2_r[pd_start + i + 1]) * day_diff
         inv_sigma2 = 1.0 / sigma2
         hess_off[i] = inv_sigma2
 
@@ -228,7 +228,7 @@ def update_single_player_weighted_jacobi_h(
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
     pd_game_handicaps: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """Jacobi variant of weighted Newton-Raphson with handicaps."""
     pd_start = player_offsets[player_id]
@@ -245,7 +245,7 @@ def update_single_player_weighted_jacobi_h(
 
     for i in range(n - 1):
         day_diff = max(1, pd_days[pd_start + i + 1] - pd_days[pd_start + i])
-        sigma2 = w2_r * day_diff
+        sigma2 = 0.5 * (pd_w2_r[pd_start + i] + pd_w2_r[pd_start + i + 1]) * day_diff
         inv_sigma2 = 1.0 / sigma2
         hess_off[i] = inv_sigma2
 
@@ -316,7 +316,7 @@ def compute_uncertainties_weighted_h(
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
     pd_game_handicaps: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> None:
     """Compute rating uncertainties from weighted Hessian with handicaps."""
     for player_id in range(num_players):
@@ -330,7 +330,7 @@ def compute_uncertainties_weighted_h(
         sigma2 = np.empty(max(1, n - 1), dtype=np.float64)
         for i in range(n - 1):
             day_diff = max(1, pd_days[pd_start + i + 1] - pd_days[pd_start + i])
-            sigma2[i] = w2_r * day_diff
+            sigma2[i] = 0.5 * (pd_w2_r[pd_start + i] + pd_w2_r[pd_start + i + 1]) * day_diff
 
         for i in range(n):
             pd_idx = pd_start + i
@@ -377,7 +377,7 @@ def run_iteration_weighted_h(
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
     pd_game_handicaps: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """Run one weighted Newton-Raphson iteration with handicaps."""
     max_change = 0.0
@@ -385,7 +385,7 @@ def run_iteration_weighted_h(
         change = update_single_player_weighted_h(
             player_id, player_offsets, pd_days, pd_r,
             pd_game_offsets, pd_game_opp_pd, pd_game_score,
-            pd_game_weights, pd_game_handicaps, w2_r,
+            pd_game_weights, pd_game_handicaps, pd_w2_r,
         )
         if change > max_change:
             max_change = change
@@ -404,7 +404,7 @@ def run_iteration_jacobi_weighted_h(
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
     pd_game_handicaps: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """Jacobi parallel Newton-Raphson iteration with handicaps."""
     pd_r_read[:] = pd_r[:]
@@ -413,7 +413,7 @@ def run_iteration_jacobi_weighted_h(
         change = update_single_player_weighted_jacobi_h(
             player_id, player_offsets, pd_days, pd_r, pd_r_read,
             pd_game_offsets, pd_game_opp_pd, pd_game_score,
-            pd_game_weights, pd_game_handicaps, w2_r,
+            pd_game_weights, pd_game_handicaps, pd_w2_r,
         )
         max_change = max(max_change, change)
     return max_change
@@ -430,7 +430,7 @@ def run_all_iterations_accelerated_weighted_h(
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
     pd_game_handicaps: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
     max_iterations: int,
     convergence_threshold: float,
     anderson_window: int,
@@ -471,13 +471,13 @@ def run_all_iterations_accelerated_weighted_h(
             max_change = run_iteration_jacobi_weighted_h(
                 num_players, player_offsets, pd_days, pd_r, pd_r_read,
                 pd_game_offsets, pd_game_opp_pd, pd_game_score,
-                pd_game_weights, pd_game_handicaps, w2_r,
+                pd_game_weights, pd_game_handicaps, pd_w2_r,
             )
         else:
             max_change = run_iteration_weighted_h(
                 num_players, player_offsets, pd_days, pd_r,
                 pd_game_offsets, pd_game_opp_pd, pd_game_score,
-                pd_game_weights, pd_game_handicaps, w2_r,
+                pd_game_weights, pd_game_handicaps, pd_w2_r,
             )
 
         if max_change < convergence_threshold:
@@ -512,7 +512,7 @@ def update_single_player_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """
     Update a single player's ratings using weighted Newton-Raphson.
@@ -541,7 +541,7 @@ def update_single_player_weighted(
     # Compute sigma² between consecutive days (Wiener process variance)
     for i in range(n - 1):
         day_diff = max(1, pd_days[pd_start + i + 1] - pd_days[pd_start + i])
-        sigma2 = w2_r * day_diff
+        sigma2 = 0.5 * (pd_w2_r[pd_start + i] + pd_w2_r[pd_start + i + 1]) * day_diff
         inv_sigma2 = 1.0 / sigma2
         hess_off[i] = inv_sigma2
 
@@ -617,7 +617,7 @@ def update_single_player_weighted_jacobi(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """
     Update a single player's ratings using weighted Newton-Raphson (Jacobi variant).
@@ -641,7 +641,7 @@ def update_single_player_weighted_jacobi(
     # Compute sigma² between consecutive days (Wiener process variance)
     for i in range(n - 1):
         day_diff = max(1, pd_days[pd_start + i + 1] - pd_days[pd_start + i])
-        sigma2 = w2_r * day_diff
+        sigma2 = 0.5 * (pd_w2_r[pd_start + i] + pd_w2_r[pd_start + i + 1]) * day_diff
         inv_sigma2 = 1.0 / sigma2
         hess_off[i] = inv_sigma2
 
@@ -717,7 +717,7 @@ def compute_uncertainties_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> None:
     """
     Compute rating uncertainties from weighted Hessian diagonal.
@@ -735,7 +735,7 @@ def compute_uncertainties_weighted(
         sigma2 = np.empty(max(1, n - 1), dtype=np.float64)
         for i in range(n - 1):
             day_diff = max(1, pd_days[pd_start + i + 1] - pd_days[pd_start + i])
-            sigma2[i] = w2_r * day_diff
+            sigma2[i] = 0.5 * (pd_w2_r[pd_start + i] + pd_w2_r[pd_start + i + 1]) * day_diff
 
         for i in range(n):
             pd_idx = pd_start + i
@@ -783,7 +783,7 @@ def run_iteration_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """
     Run one weighted Newton-Raphson iteration for all players.
@@ -802,7 +802,7 @@ def run_iteration_weighted(
             pd_game_opp_pd,
             pd_game_score,
             pd_game_weights,
-            w2_r,
+            pd_w2_r,
         )
         if change > max_change:
             max_change = change
@@ -821,7 +821,7 @@ def run_iteration_jacobi_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
 ) -> float:
     """
     Run one Jacobi weighted Newton-Raphson iteration for all players in parallel.
@@ -843,7 +843,7 @@ def run_iteration_jacobi_weighted(
             pd_game_opp_pd,
             pd_game_score,
             pd_game_weights,
-            w2_r,
+            pd_w2_r,
         )
         max_change = max(max_change, change)
 
@@ -861,7 +861,7 @@ def run_iteration_active_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
     threshold: float,
     pd_to_player: np.ndarray,
 ) -> float:
@@ -888,7 +888,7 @@ def run_iteration_active_weighted(
             pd_game_opp_pd,
             pd_game_score,
             pd_game_weights,
-            w2_r,
+            pd_w2_r,
         )
 
         if change < threshold:
@@ -923,7 +923,7 @@ def run_iteration_jacobi_active_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
     threshold: float,
     pd_to_player: np.ndarray,
 ) -> float:
@@ -950,7 +950,7 @@ def run_iteration_jacobi_active_weighted(
             pd_game_opp_pd,
             pd_game_score,
             pd_game_weights,
-            w2_r,
+            pd_w2_r,
         )
 
         if change < threshold:
@@ -982,7 +982,7 @@ def run_all_iterations_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
     max_iterations: int,
     convergence_threshold: float,
 ) -> int:
@@ -1001,7 +1001,7 @@ def run_all_iterations_weighted(
             pd_game_opp_pd,
             pd_game_score,
             pd_game_weights,
-            w2_r,
+            pd_w2_r,
         )
 
         if max_change < convergence_threshold:
@@ -1020,7 +1020,7 @@ def run_all_iterations_accelerated_weighted(
     pd_game_opp_pd: np.ndarray,
     pd_game_score: np.ndarray,
     pd_game_weights: np.ndarray,
-    w2_r: float,
+    pd_w2_r: np.ndarray,
     max_iterations: int,
     convergence_threshold: float,
     anderson_window: int,
@@ -1074,28 +1074,28 @@ def run_all_iterations_accelerated_weighted(
                 max_change = run_iteration_jacobi_active_weighted(
                     num_players, active, player_offsets, pd_days, pd_r,
                     pd_r_read, pd_game_offsets, pd_game_opp_pd,
-                    pd_game_score, pd_game_weights, w2_r,
+                    pd_game_score, pd_game_weights, pd_w2_r,
                     convergence_threshold, pd_to_player,
                 )
             else:
                 max_change = run_iteration_jacobi_weighted(
                     num_players, player_offsets, pd_days, pd_r,
                     pd_r_read, pd_game_offsets, pd_game_opp_pd,
-                    pd_game_score, pd_game_weights, w2_r,
+                    pd_game_score, pd_game_weights, pd_w2_r,
                 )
         else:
             if use_active_set:
                 max_change = run_iteration_active_weighted(
                     num_players, active, player_offsets, pd_days, pd_r,
                     pd_game_offsets, pd_game_opp_pd, pd_game_score,
-                    pd_game_weights, w2_r, convergence_threshold,
+                    pd_game_weights, pd_w2_r, convergence_threshold,
                     pd_to_player,
                 )
             else:
                 max_change = run_iteration_weighted(
                     num_players, player_offsets, pd_days, pd_r,
                     pd_game_offsets, pd_game_opp_pd, pd_game_score,
-                    pd_game_weights, w2_r,
+                    pd_game_weights, pd_w2_r,
                 )
 
         if max_change < convergence_threshold:
@@ -1118,3 +1118,5 @@ def run_all_iterations_accelerated_weighted(
                         active[pid] = True
 
     return max_iterations
+
+
