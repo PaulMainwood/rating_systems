@@ -11,6 +11,7 @@ from .optimizer import (
     optimize_yuksel,
     optimize_whr,
     optimize_ttt,
+    optimize_melo,
     optimize_all,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "optimize_yuksel",
     "optimize_whr",
     "optimize_ttt",
+    "optimize_melo",
     "optimize_all",
 ]

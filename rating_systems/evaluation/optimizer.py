@@ -687,6 +687,67 @@ def optimize_yuksel(
     )
 
 
+def optimize_melo(
+    dataset: GameDataset,
+    k_bounds: Tuple[float, float] = (4, 64),
+    c_factor_bounds: Tuple[float, float] = (0.5, 64),
+    scale_bounds: Tuple[float, float] = (200, 600),
+    initial_rating: float = 1500.0,
+    k_dim: int = 1,
+    initial_c_std: float = 0.01,
+    maxiter: int = 30,
+    train_ratio: float = 0.7,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+) -> OptimizationResult:
+    """
+    Optimize mElo parameters.
+
+    Searches over k_factor, c_factor, and scale. The intransitivity
+    dimension (k_dim) and initial style vector scale (initial_c_std)
+    are fixed during optimization.
+
+    Args:
+        dataset: Game dataset
+        k_bounds: Bounds for K-factor (scalar rating update)
+        c_factor_bounds: Bounds for style vector learning rate
+        scale_bounds: Bounds for logistic scale
+        initial_rating: Fixed initial rating
+        k_dim: Fixed intransitivity dimension (default: 1)
+        initial_c_std: Fixed initial style vector std (default: 0.01)
+        maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training
+        method: Optimization method
+        verbose: Whether to print progress
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.melo import MElo
+
+    optimizer = RatingSystemOptimizer(
+        MElo,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params={
+            "initial_rating": initial_rating,
+            "k_dim": k_dim,
+            "initial_c_std": initial_c_std,
+        },
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "k_factor": k_bounds,
+            "c_factor": c_factor_bounds,
+            "scale": scale_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+    )
+
+
 def optimize_all(
     dataset: GameDataset,
     systems: Optional[List[str]] = None,
@@ -710,7 +771,7 @@ def optimize_all(
         Dict mapping system name to OptimizationResult
     """
     if systems is None:
-        systems = ["elo", "glicko", "glicko2", "stephenson", "trueskill", "yuksel", "whr", "ttt"]
+        systems = ["elo", "glicko", "glicko2", "stephenson", "trueskill", "yuksel", "whr", "ttt", "melo"]
 
     results = {}
 
@@ -723,6 +784,7 @@ def optimize_all(
         "yuksel": optimize_yuksel,
         "whr": optimize_whr,
         "ttt": optimize_ttt,
+        "melo": optimize_melo,
     }
 
     for system in systems:

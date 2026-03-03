@@ -47,6 +47,7 @@ from .wstephenson import WStephenson, WStephensonConfig
 from .wyuksel import WYuksel, WYukselConfig
 from .wtrueskill import WeightedTrueSkill, WTrueSkillConfig
 from .hodge import HodgeIntransitivity, HodgeConfig
+from .melo import MElo, MEloConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -98,4 +99,7 @@ __all__ = [
     # Hodge intransitivity
     "HodgeIntransitivity",
     "HodgeConfig",
+    # mElo (multidimensional Elo with intransitivity)
+    "MElo",
+    "MEloConfig",
 ]

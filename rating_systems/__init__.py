@@ -102,6 +102,9 @@ from .systems import (
     # Hodge intransitivity
     HodgeIntransitivity,
     HodgeConfig,
+    # mElo (multidimensional Elo with intransitivity)
+    MElo,
+    MEloConfig,
 )
 from .results import (
     FittedEloRatings,
@@ -168,6 +171,8 @@ __all__ = [
     "WTrueSkillConfig",
     "HodgeIntransitivity",
     "HodgeConfig",
+    "MElo",
+    "MEloConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",
