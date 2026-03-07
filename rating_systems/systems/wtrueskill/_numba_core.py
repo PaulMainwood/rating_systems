@@ -406,3 +406,68 @@ def predict_single_h(
     c = math.sqrt(2.0 * beta * beta + sigma1 * sigma1 + sigma2 * sigma2)
     t = (mu1 - mu2 + handicap) / c
     return _cdf(t)
+
+
+@njit(cache=True, fastmath=True)
+def walk_forward_predict_update(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    day_offsets: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    beta: float,
+    tau: float,
+    min_sigma: float,
+    n_train_days: int,
+) -> np.ndarray:
+    """Fused predict+update walk-forward in a single Numba call.
+
+    For each post-training day: predict all games using current ratings,
+    then update ratings sequentially. Training-period days are skipped
+    (already processed by fit()).
+
+    Returns predictions array (NaN for training period).
+    """
+    n_games = len(player1)
+    predictions = np.full(n_games, np.nan, dtype=np.float64)
+    n_days = len(day_offsets) - 1
+    n_players = len(mu)
+
+    for day_idx in range(n_train_days, n_days):
+        start = day_offsets[day_idx]
+        end = day_offsets[day_idx + 1]
+
+        # Apply tau (skill drift) to all players
+        if tau > 0:
+            for k in range(n_players):
+                sigma[k] = math.sqrt(sigma[k] * sigma[k] + tau * tau)
+
+        # Predict before update
+        for i in range(start, end):
+            p1 = player1[i]
+            p2 = player2[i]
+            c = math.sqrt(
+                2.0 * beta * beta + sigma[p1] * sigma[p1] + sigma[p2] * sigma[p2]
+            )
+            t = (mu[p1] - mu[p2] + handicaps[i]) / c
+            predictions[i] = _cdf(t)
+
+        # Update sequentially
+        for i in range(start, end):
+            p1 = player1[i]
+            p2 = player2[i]
+            new_mu1, new_sigma1, new_mu2, new_sigma2 = update_single_game_weighted_h(
+                mu[p1], sigma[p1],
+                mu[p2], sigma[p2],
+                scores[i], weights[i], handicaps[i],
+                beta, min_sigma,
+            )
+            mu[p1] = new_mu1
+            sigma[p1] = new_sigma1
+            mu[p2] = new_mu2
+            sigma[p2] = new_sigma2
+
+    return predictions

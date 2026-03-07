@@ -92,23 +92,29 @@ class MatchGraph:
 
         edges = []
         for i_pos, ni in enumerate(nodes):
+            ni_opponents = self._opponents.get(ni, set())
             for j_pos in range(i_pos + 1, len(nodes)):
                 nj = nodes[j_pos]
+                if nj not in ni_opponents:
+                    continue
 
                 # Compute weighted wins in each direction
-                flow_ij = 0.0  # ni beat nj
-                flow_ji = 0.0  # nj beat ni
+                flow_ij = 0.0
                 total_weight = 0.0
 
-                for day in self._wins.get((ni, nj), []):
-                    w = np.exp(-decay_rate * (current_day - day))
-                    flow_ij += w
-                    total_weight += w
+                days_ij = self._wins.get((ni, nj))
+                if days_ij:
+                    w = np.exp(-decay_rate * (current_day - np.array(days_ij, dtype=np.float64)))
+                    flow_ij = float(w.sum())
+                    total_weight = flow_ij
 
-                for day in self._wins.get((nj, ni), []):
-                    w = np.exp(-decay_rate * (current_day - day))
-                    flow_ji += w
-                    total_weight += w
+                days_ji = self._wins.get((nj, ni))
+                if days_ji:
+                    w = np.exp(-decay_rate * (current_day - np.array(days_ji, dtype=np.float64)))
+                    flow_ji = float(w.sum())
+                    total_weight += flow_ji
+                else:
+                    flow_ji = 0.0
 
                 if total_weight > 0:
                     net_flow = flow_ij - flow_ji

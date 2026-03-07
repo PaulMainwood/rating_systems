@@ -1,17 +1,7 @@
 """
-Weighted Elo (WElo) rating system - Elo with per-game weights and handicaps.
+Weighted G-Elo (WGElo) — G-Elo with per-game weights and handicaps.
 
-The update rule is:
-    expected = sigmoid((r1 - r2 + handicap) * log10/scale)
-    delta = K * w * (score - expected)
-
-where w is a per-game weight and handicap is a per-game advantage for
-player 1 (in Elo points). When w=1 and handicap=0 for all games, this
-is identical to standard Elo.
-
-This is a general-purpose weighted Elo. It knows nothing about surfaces
-or any other domain-specific concept - it simply accepts a weight and
-handicap for each game.
+When w=1 and handicap=0 for all games, this is identical to standard GElo.
 """
 
 from dataclasses import dataclass
@@ -21,46 +11,40 @@ import numpy as np
 
 from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameBatch, GameDataset
-from ._numba_core import (
+from ..gelo._numba_core import (
     update_ratings_weighted_sequential,
     predict_proba_batch,
     predict_single,
+    predict_proba_with_handicap_batch,
+    predict_single_with_handicap,
     fit_all_days_weighted,
     walk_forward_predict_update,
 )
 
 
 @dataclass
-class WEloConfig:
-    """Configuration for Weighted Elo rating system."""
+class WGEloConfig:
+    """Configuration for Weighted G-Elo."""
 
     initial_rating: float = 1500.0
     k_factor: float = 32.0
     scale: float = 400.0
+    threshold_spread: float = 0.5
 
 
-class WElo(RatingSystem):
+class WGElo(RatingSystem):
     """
-    Weighted Elo rating system with Numba acceleration.
+    Weighted G-Elo rating system with Numba acceleration.
 
-    Like standard Elo, but each game has an associated weight that scales
-    the rating update. This allows certain games to have more or less
-    influence on the rating.
-
-    Update rule: delta = K * w * (score - expected)
-
-    When weights are not provided, all default to 1.0 (standard Elo).
+    Like standard GElo, but each game has an associated weight that scales
+    the update, plus an optional handicap that shifts the expected score
+    for player 1.
 
     Parameters:
-        initial_rating: Starting rating for new players (default: 1500)
+        initial_rating: Starting rating (default: 1500)
         k_factor: Maximum rating change per game (default: 32)
-        scale: Rating difference where one player is 10x stronger (default: 400)
-
-    Example:
-        >>> welo = WElo(k_factor=47)
-        >>> weights = np.array([1.0, 0.8, 0.8, 1.0, ...])
-        >>> welo.fit(dataset, weights=weights)
-        >>> print(welo.predict_proba(0, 1))
+        scale: Logistic scale (default: 400)
+        threshold_spread: Distance between ordinal thresholds (default: 0.5)
     """
 
     system_type = RatingSystemType.ONLINE
@@ -70,41 +54,54 @@ class WElo(RatingSystem):
         initial_rating: float = 1500.0,
         k_factor: float = 32.0,
         scale: float = 400.0,
+        threshold_spread: float = 0.5,
         num_players: Optional[int] = None,
     ):
-        self.config = WEloConfig(
+        self.config = WGEloConfig(
             initial_rating=initial_rating,
             k_factor=k_factor,
             scale=scale,
+            threshold_spread=threshold_spread,
         )
+        self._thresholds = np.array(
+            [-threshold_spread, 0.0, threshold_spread], dtype=np.float64)
+        self._margins: Optional[np.ndarray] = None
         self._num_games_fitted = 0
         self._player_names: Optional[Dict[int, str]] = None
         super().__init__(num_players=num_players)
 
     def _initialize_ratings(self, num_players: int) -> PlayerRatings:
-        """Create initial WElo ratings for all players."""
+        """Create initial ratings."""
         return PlayerRatings(
             ratings=np.full(num_players, self.config.initial_rating, dtype=np.float64),
-            metadata={"system": "welo", "config": self.config},
+            metadata={"system": "wgelo", "config": self.config},
         )
 
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
-        """Update ratings with uniform weights and no handicaps (standard Elo behaviour)."""
+        """Update with uniform weights (standard G-Elo behaviour)."""
         if len(batch) == 0:
             return
 
         n = len(batch)
+        start = self._num_games_fitted
+        end = start + n
+        if self._margins is not None and end <= len(self._margins):
+            margins = self._margins[start:end]
+        else:
+            margins = np.where(batch.scores > 0.5, 2.0, 1.0)
+
         weights = np.ones(n, dtype=np.float64)
         handicaps = np.zeros(n, dtype=np.float64)
         update_ratings_weighted_sequential(
             batch.player1,
             batch.player2,
-            batch.scores,
+            margins,
             weights,
             handicaps,
             ratings.ratings,
             self.config.k_factor,
             self.config.scale,
+            self._thresholds,
         )
         self._num_games_fitted += n
 
@@ -113,15 +110,17 @@ class WElo(RatingSystem):
         batch: GameBatch,
         weights: np.ndarray,
         handicaps: Optional[np.ndarray] = None,
-    ) -> "WElo":
+        margins: Optional[np.ndarray] = None,
+    ) -> "WGElo":
         """
         Incrementally update ratings with per-game weights and handicaps.
 
         Args:
             batch: Games to process
-            weights: Per-game weights array (same length as batch)
-            handicaps: Per-game handicap for player 1 in Elo points.
-                       Positive = player 1 advantage. If None, all zero.
+            weights: Per-game weights
+            handicaps: Per-game handicap for player 1 in Elo points
+            margins: Per-game ordinal margin categories. If None,
+                     infers from binary scores.
 
         Returns:
             self (for method chaining)
@@ -133,20 +132,25 @@ class WElo(RatingSystem):
             return self
 
         n = len(batch)
-        weights = np.ascontiguousarray(weights, dtype=np.float64)
-        if handicaps is None:
-            h = np.zeros(n, dtype=np.float64)
+        w = np.ascontiguousarray(weights, dtype=np.float64)
+        h = np.zeros(n, dtype=np.float64) if handicaps is None else \
+            np.ascontiguousarray(handicaps, dtype=np.float64)
+
+        if margins is not None:
+            m = np.ascontiguousarray(margins, dtype=np.float64)
         else:
-            h = np.ascontiguousarray(handicaps, dtype=np.float64)
+            m = np.where(batch.scores > 0.5, 2.0, 1.0)
+
         update_ratings_weighted_sequential(
             batch.player1,
             batch.player2,
-            batch.scores,
-            weights,
+            m,
+            w,
             h,
             self._ratings.ratings,
             self.config.k_factor,
             self.config.scale,
+            self._thresholds,
         )
         self._num_games_fitted += n
         self._current_day = batch.day
@@ -159,63 +163,52 @@ class WElo(RatingSystem):
         handicaps: Optional[Union[float, np.ndarray]] = None,
         day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
-        """
-        Predict probability that player1 beats player2.
-
-        Args:
-            player1: Single player ID or array of player IDs
-            player2: Single player ID or array of player IDs
-            handicaps: Per-game handicap for player 1 in Elo points.
-                       Single float for single prediction, array for batch.
-                       Positive = player 1 advantage. If None, all zero.
-
-        Returns:
-            Single probability or array of probabilities
-        """
+        """Predict P(player1 wins)."""
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
 
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):
-            h = 0.0 if handicaps is None else float(handicaps)
+            if handicaps is not None:
+                return predict_single_with_handicap(
+                    self._ratings.ratings[int(player1)],
+                    self._ratings.ratings[int(player2)],
+                    self.config.scale,
+                    float(handicaps),
+                )
             return predict_single(
                 self._ratings.ratings[int(player1)],
                 self._ratings.ratings[int(player2)],
                 self.config.scale,
-                h,
             )
 
         p1 = np.ascontiguousarray(player1, dtype=np.int64)
         p2 = np.ascontiguousarray(player2, dtype=np.int64)
-        if handicaps is None:
-            h = np.zeros(len(p1), dtype=np.float64)
-        else:
+        if handicaps is not None:
             h = np.ascontiguousarray(handicaps, dtype=np.float64)
-        return predict_proba_batch(p1, p2, self._ratings.ratings, self.config.scale, h)
+            return predict_proba_with_handicap_batch(
+                p1, p2, self._ratings.ratings, self.config.scale, h)
+        return predict_proba_batch(p1, p2, self._ratings.ratings, self.config.scale)
 
     def fit(
         self,
         dataset: GameDataset,
+        margins: Optional[np.ndarray] = None,
         weights: Optional[np.ndarray] = None,
         handicaps: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
-    ) -> "WElo":
+    ) -> "WGElo":
         """
-        Fit the rating system on a dataset with optional per-game weights and handicaps.
-
-        Uses optimised single Numba call to process all days without
-        Python iteration overhead.
+        Fit WGElo on a dataset with optional weights and handicaps.
 
         Args:
             dataset: Game dataset to fit on
-            weights: Per-game weights array. Must match the number of games
-                     in the dataset (after any end_day filtering). If None,
-                     all weights default to 1.0.
-            handicaps: Per-game handicap for player 1 in Elo points.
-                       Positive = player 1 advantage. If None, all zero.
-            end_day: Last day to include (inclusive). Cannot be used together
-                     with weights - pre-filter the dataset instead.
-            player_names: Optional mapping of player_id -> name
+            margins: Per-game ordinal margin categories. If None, infers
+                     from binary scores (middle-margin).
+            weights: Per-game weights. If None, all 1.0.
+            handicaps: Per-game handicaps. If None, all 0.0.
+            end_day: Last day to include.
+            player_names: Optional player names.
 
         Returns:
             self (for method chaining)
@@ -231,41 +224,41 @@ class WElo(RatingSystem):
         if end_day is not None:
             dataset = dataset.filter_days(end_day=end_day)
 
-        # Initialize if needed
         if self._num_players is None or self._num_players < dataset.num_players:
             self._num_players = dataset.num_players
             self._ratings = self._initialize_ratings(self._num_players)
 
-        # Get pre-batched arrays for direct Numba processing
         player1, player2, scores, day_indices, day_offsets = dataset.get_batched_arrays()
 
-        if player1 is not None and len(player1) > 0:
-            n = len(player1)
-            if weights is None:
-                w = np.ones(n, dtype=np.float64)
-            else:
-                w = np.ascontiguousarray(weights, dtype=np.float64)
-
-            if handicaps is None:
-                h = np.zeros(n, dtype=np.float64)
-            else:
-                h = np.ascontiguousarray(handicaps, dtype=np.float64)
-
-            fit_all_days_weighted(
-                player1,
-                player2,
-                scores,
-                w,
-                h,
-                day_offsets,
-                self._ratings.ratings,
-                self.config.k_factor,
-                self.config.scale,
-            )
-            self._num_games_fitted = n
-            self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
-        else:
+        if player1 is None or len(player1) == 0:
             self._num_games_fitted = 0
+            self._fitted = True
+            return self
+
+        n = len(player1)
+
+        # Margins
+        if margins is not None:
+            m = np.ascontiguousarray(margins, dtype=np.float64)
+        else:
+            m = np.where(scores > 0.5, 2.0, 1.0)
+        self._margins = m
+
+        # Weights and handicaps
+        w = np.ones(n, dtype=np.float64) if weights is None else \
+            np.ascontiguousarray(weights, dtype=np.float64)
+        h = np.zeros(n, dtype=np.float64) if handicaps is None else \
+            np.ascontiguousarray(handicaps, dtype=np.float64)
+
+        fit_all_days_weighted(
+            player1, player2, m, w, h, day_offsets,
+            self._ratings.ratings,
+            self.config.k_factor,
+            self.config.scale,
+            self._thresholds,
+        )
+        self._num_games_fitted = n
+        self._current_day = int(day_indices[-1]) if len(day_indices) > 0 else None
 
         self._fitted = True
         return self
@@ -286,16 +279,19 @@ class WElo(RatingSystem):
         Eliminates Python per-day overhead. Modifies ratings in-place.
         Returns predictions array (NaN for training period).
         """
+        margins = np.where(scores > 0.5, 2.0, 1.0)
         return walk_forward_predict_update(
-            player1, player2, scores, day_offsets,
+            player1, player2, scores, margins, day_offsets,
             weights, handicaps,
             self._ratings.ratings,
             self.config.k_factor, self.config.scale,
+            self._thresholds,
             n_train_days,
         )
 
-    def reset(self) -> "WElo":
-        """Reset the rating system to initial state."""
+    def reset(self) -> "WGElo":
+        """Reset to initial state."""
+        self._margins = None
         self._num_games_fitted = 0
         return super().reset()
 
@@ -303,7 +299,7 @@ class WElo(RatingSystem):
         status = "fitted" if self._fitted else "not fitted"
         players = self._num_players or "?"
         return (
-            f"WElo(k_factor={self.config.k_factor}, "
-            f"initial_rating={self.config.initial_rating}, "
+            f"WGElo(k_factor={self.config.k_factor}, "
+            f"threshold_spread={self.config.threshold_spread}, "
             f"players={players}, {status})"
         )

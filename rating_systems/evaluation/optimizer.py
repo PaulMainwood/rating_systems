@@ -1,7 +1,7 @@
 """
 Hyperparameter optimization for rating systems.
 
-Uses scipy.optimize to find optimal parameters by minimizing Brier score
+Uses scipy.optimize to find optimal parameters by minimizing log loss
 on a held-out validation set via walk-forward backtesting.
 """
 
@@ -53,7 +53,7 @@ class RatingSystemOptimizer:
     Hyperparameter optimizer for rating systems.
 
     Uses differential evolution (global optimization) or L-BFGS-B
-    (local optimization) to find parameters that minimize Brier score.
+    (local optimization) to find parameters that minimize log loss.
 
     Example:
         >>> optimizer = RatingSystemOptimizer(Elo, dataset)
@@ -103,7 +103,7 @@ class RatingSystemOptimizer:
         # Tracking
         self._eval_count = 0
         self._history: List[Dict[str, Any]] = []
-        self._best_brier = float('inf')
+        self._best_log_loss = float('inf')
         self._best_params: Dict[str, float] = {}
         self._best_result: Optional[Any] = None
         self._start_time = 0.0
@@ -112,13 +112,13 @@ class RatingSystemOptimizer:
 
     def _objective(self, x: np.ndarray) -> float:
         """
-        Objective function for optimization (minimizes Brier score).
+        Objective function for optimization (minimizes log loss).
 
         Args:
             x: Parameter values as array
 
         Returns:
-            Brier score (to minimize)
+            Log loss (to minimize)
         """
         # Convert array to parameter dict
         params = {name: val for name, val in zip(self._param_names, x)}
@@ -144,7 +144,7 @@ class RatingSystemOptimizer:
             # Return high penalty for invalid parameters
             if self._verbose:
                 print(f"  [!] Error with params {params}: {e}")
-            return 1.0  # Max Brier score
+            return 10.0  # High log loss penalty
 
         self._eval_count += 1
 
@@ -160,9 +160,9 @@ class RatingSystemOptimizer:
         self._history.append(entry)
 
         # Update best
-        is_best = brier < self._best_brier
+        is_best = log_loss < self._best_log_loss
         if is_best:
-            self._best_brier = brier
+            self._best_log_loss = log_loss
             self._best_params = params.copy()
             self._best_result = result
 
@@ -172,10 +172,10 @@ class RatingSystemOptimizer:
             params_str = ", ".join(f"{k}={v:.4f}" for k, v in params.items()
                                    if k in self._param_names)
             best_marker = " *BEST*" if is_best else ""
-            print(f"  [{self._eval_count:3d}] Brier={brier:.6f} LogLoss={log_loss:.6f} "
+            print(f"  [{self._eval_count:3d}] LogLoss={log_loss:.6f} Brier={brier:.6f} "
                   f"Acc={accuracy:.4f} | {params_str} ({elapsed:.1f}s){best_marker}")
 
-        return brier
+        return log_loss
 
     def optimize(
         self,
@@ -183,6 +183,7 @@ class RatingSystemOptimizer:
         method: str = "differential_evolution",
         maxiter: int = 50,
         verbose: bool = True,
+        x0: Optional[np.ndarray] = None,
         **kwargs,
     ) -> OptimizationResult:
         """
@@ -197,6 +198,8 @@ class RatingSystemOptimizer:
                 - "Powell": Direction set method
             maxiter: Maximum iterations/generations
             verbose: Whether to print progress
+            x0: Initial parameter values for local methods. If None, uses
+                midpoint of bounds. Ignored for differential_evolution.
             **kwargs: Additional arguments passed to optimizer
 
         Returns:
@@ -205,7 +208,7 @@ class RatingSystemOptimizer:
         self._verbose = verbose
         self._eval_count = 0
         self._history = []
-        self._best_brier = float('inf')
+        self._best_log_loss = float('inf')
         self._best_params = {}
         self._start_time = time.time()
 
@@ -247,11 +250,17 @@ class RatingSystemOptimizer:
             best_x = result.x
         else:
             # Local optimization methods
-            # Start from middle of bounds
-            x0 = np.array([(b[0] + b[1]) / 2 for b in bounds])
+            if x0 is None:
+                x0 = np.array([(b[0] + b[1]) / 2 for b in bounds])
+            else:
+                x0 = np.asarray(x0, dtype=np.float64)
+
+            if verbose:
+                x0_dict = {name: val for name, val in zip(self._param_names, x0)}
+                print(f"Starting point: {x0_dict}\n")
 
             # For L-BFGS-B, use larger finite-difference step size
-            # Default eps (~1e-8) is too small for noisy Brier score objectives
+            # Default eps (~1e-8) is too small for noisy log loss objectives
             options = {"maxiter": maxiter, "disp": False}
             if method == "L-BFGS-B":
                 # Scale eps based on parameter ranges
@@ -275,14 +284,14 @@ class RatingSystemOptimizer:
         final_params = {name: val for name, val in zip(self._param_names, best_x)}
 
         # Get metrics from best result
-        best_log_loss = self._best_result.log_loss if self._best_result else 0.0
+        best_brier = self._best_result.brier if self._best_result else 0.0
         best_accuracy = self._best_result.accuracy if self._best_result else 0.0
 
         opt_result = OptimizationResult(
             system_class=self.system_class.__name__,
             best_params=final_params,
-            best_brier=self._best_brier,
-            best_log_loss=best_log_loss,
+            best_brier=best_brier,
+            best_log_loss=self._best_log_loss,
             best_accuracy=best_accuracy,
             n_evaluations=self._eval_count,
             total_time=total_time,
@@ -305,6 +314,7 @@ def optimize_elo(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize Elo parameters.
@@ -339,6 +349,7 @@ def optimize_elo(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -352,6 +363,7 @@ def optimize_glicko(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize Glicko parameters.
@@ -387,6 +399,7 @@ def optimize_glicko(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -400,6 +413,7 @@ def optimize_glicko2(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize Glicko-2 parameters.
@@ -436,6 +450,7 @@ def optimize_glicko2(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -450,6 +465,7 @@ def optimize_stephenson(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize Stephenson parameters.
@@ -488,6 +504,7 @@ def optimize_stephenson(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -500,6 +517,7 @@ def optimize_whr(
     method: str = "differential_evolution",
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize WHR parameters.
@@ -536,6 +554,7 @@ def optimize_whr(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -550,6 +569,7 @@ def optimize_ttt(
     method: str = "differential_evolution",
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize TrueSkill Through Time parameters.
@@ -590,6 +610,121 @@ def optimize_ttt(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
+    )
+
+
+def optimize_matern_ttt(
+    dataset: GameDataset,
+    sigma_bounds: Tuple[float, float] = (0.5, 10.0),
+    beta_bounds: Tuple[float, float] = (0.1, 3.0),
+    lengthscale_bounds: Tuple[float, float] = (50, 2000),
+    maxiter: int = 20,
+    max_test_days: Optional[int] = None,
+    train_ratio: float = 0.7,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    fixed_params: Optional[Dict[str, Any]] = None,
+    x0: Optional[np.ndarray] = None,
+) -> OptimizationResult:
+    """
+    Optimize Matérn 3/2 TrueSkill Through Time parameters.
+
+    Args:
+        dataset: Game dataset
+        sigma_bounds: Bounds for marginal std dev
+        beta_bounds: Bounds for performance noise
+        lengthscale_bounds: Bounds for temporal correlation length (days)
+        maxiter: Maximum optimization iterations
+        max_test_days: Limit test period
+        train_ratio: Fraction of days for initial training
+        method: Optimization method
+        verbose: Whether to print progress
+        fixed_params: Parameters held fixed during optimization
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.matern_ttt import MaternTTT
+
+    optimizer = RatingSystemOptimizer(
+        MaternTTT,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params=fixed_params or {},
+        max_test_days=max_test_days,
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "sigma": sigma_bounds,
+            "beta": beta_bounds,
+            "lengthscale": lengthscale_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
+    )
+
+
+def optimize_margin_ttt(
+    dataset: GameDataset,
+    sigma_bounds: Tuple[float, float] = (0.5, 5.0),
+    beta_bounds: Tuple[float, float] = (0.1, 3.0),
+    gamma_bounds: Tuple[float, float] = (0.001, 0.3),
+    margin_scale_bounds: Tuple[float, float] = (1.0, 30.0),
+    sigma_margin_bounds: Tuple[float, float] = (0.5, 10.0),
+    maxiter: int = 20,
+    max_test_days: Optional[int] = None,
+    train_ratio: float = 0.7,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    fixed_params: Optional[Dict[str, Any]] = None,
+    x0: Optional[np.ndarray] = None,
+) -> OptimizationResult:
+    """
+    Optimize MarginTTT parameters.
+
+    Args:
+        dataset: Game dataset
+        sigma_bounds: Bounds for prior skill std dev
+        beta_bounds: Bounds for performance variability
+        gamma_bounds: Bounds for skill drift rate
+        margin_scale_bounds: Bounds for margin → skill unit conversion
+        sigma_margin_bounds: Bounds for observation noise
+        maxiter: Maximum optimization iterations
+        max_test_days: Limit test period
+        train_ratio: Fraction of days for initial training
+        method: Optimization method
+        verbose: Whether to print progress
+        fixed_params: Parameters held fixed during optimization
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.margin_ttt import MarginTTT
+
+    optimizer = RatingSystemOptimizer(
+        MarginTTT,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params=fixed_params or {},
+        max_test_days=max_test_days,
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "sigma": sigma_bounds,
+            "beta": beta_bounds,
+            "gamma": gamma_bounds,
+            "margin_scale": margin_scale_bounds,
+            "sigma_margin": sigma_margin_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
     )
 
 
@@ -602,6 +737,7 @@ def optimize_trueskill(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize TrueSkill parameters.
@@ -637,6 +773,7 @@ def optimize_trueskill(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -649,6 +786,7 @@ def optimize_yuksel(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize Yuksel parameters.
@@ -684,6 +822,7 @@ def optimize_yuksel(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
     )
 
 
@@ -699,6 +838,7 @@ def optimize_melo(
     train_ratio: float = 0.7,
     method: str = "differential_evolution",
     verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizationResult:
     """
     Optimize mElo parameters.
@@ -745,6 +885,112 @@ def optimize_melo(
         method=method,
         maxiter=maxiter,
         verbose=verbose,
+        x0=x0,
+    )
+
+
+def optimize_eigenvector(
+    dataset: GameDataset,
+    half_life_bounds: Tuple[float, float] = (90, 730),
+    scale_bounds: Tuple[float, float] = (50, 500),
+    centrality_scale_bounds: Tuple[float, float] = (1000, 50000),
+    maxiter: int = 20,
+    max_test_days: Optional[int] = None,
+    train_ratio: float = 0.7,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    fixed_params: Optional[Dict[str, Any]] = None,
+    x0: Optional[np.ndarray] = None,
+) -> OptimizationResult:
+    """
+    Optimize EigenvectorCentrality parameters.
+
+    Args:
+        dataset: Game dataset
+        half_life_bounds: Bounds for edge decay half-life (days)
+        scale_bounds: Bounds for logistic scale
+        centrality_scale_bounds: Bounds for centrality-to-rating multiplier
+        maxiter: Maximum optimization iterations
+        max_test_days: Limit test period
+        train_ratio: Fraction of days for initial training
+        method: Optimization method
+        verbose: Whether to print progress
+        fixed_params: Parameters held fixed during optimization
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.eigenvector import EigenvectorCentrality
+
+    optimizer = RatingSystemOptimizer(
+        EigenvectorCentrality,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params=fixed_params or {"recompute_interval": 7, "min_edges": 10},
+        max_test_days=max_test_days,
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "half_life": half_life_bounds,
+            "scale": scale_bounds,
+            "centrality_scale": centrality_scale_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
+    )
+
+
+def optimize_gelo(
+    dataset: GameDataset,
+    k_bounds: Tuple[float, float] = (4, 100),
+    scale_bounds: Tuple[float, float] = (200, 600),
+    threshold_spread_bounds: Tuple[float, float] = (0.1, 2.0),
+    initial_rating: float = 1500.0,
+    maxiter: int = 30,
+    train_ratio: float = 0.7,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
+) -> OptimizationResult:
+    """
+    Optimize G-Elo parameters.
+
+    Args:
+        dataset: Game dataset
+        k_bounds: Bounds for K-factor
+        scale_bounds: Bounds for logistic scale
+        threshold_spread_bounds: Bounds for ordinal threshold spacing
+        initial_rating: Fixed initial rating
+        maxiter: Maximum optimization iterations
+        train_ratio: Fraction of days for initial training
+        method: Optimization method
+        verbose: Whether to print progress
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.gelo import GElo
+
+    optimizer = RatingSystemOptimizer(
+        GElo,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params={"initial_rating": initial_rating},
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "k_factor": k_bounds,
+            "scale": scale_bounds,
+            "threshold_spread": threshold_spread_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
     )
 
 

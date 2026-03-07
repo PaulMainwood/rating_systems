@@ -81,15 +81,21 @@ class HodgeIntransitivity(RatingSystem):
         n = len(player1)
         scores = np.full(n, np.nan, dtype=np.float64)
 
+        graph = self._graph
+        current_day = self._current_day
+        half_life = self._half_life
+        min_common = self._min_common
+        max_nodes = self._max_nodes
+
         for i in range(n):
             scores[i] = compute_i_star(
                 int(player1[i]),
                 int(player2[i]),
-                self._graph,
-                self._current_day,
-                self._half_life,
-                self._min_common,
-                self._max_nodes,
+                graph,
+                current_day,
+                half_life,
+                min_common,
+                max_nodes,
             )
 
         return scores

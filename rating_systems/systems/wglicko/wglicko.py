@@ -31,6 +31,7 @@ from ._numba_core import (
     predict_proba_batch_at_day,
     predict_single_at_day,
     get_top_n_indices,
+    walk_forward_predict_update,
 )
 
 
@@ -352,6 +353,32 @@ class WGlicko(RatingSystem):
         return (
             float(self._ratings.ratings[player_id]),
             float(self._ratings.rd[player_id]),
+        )
+
+    def fused_walk_forward(
+        self,
+        player1: np.ndarray,
+        player2: np.ndarray,
+        scores: np.ndarray,
+        day_indices: np.ndarray,
+        day_offsets: np.ndarray,
+        weights: np.ndarray,
+        handicaps: np.ndarray,
+        n_train_days: int,
+    ) -> np.ndarray:
+        """Fused predict+update walk-forward in a single Numba call.
+
+        Eliminates Python per-day overhead. Modifies ratings/RD in-place.
+        Returns predictions array (NaN for training period).
+        """
+        return walk_forward_predict_update(
+            player1, player2, scores,
+            day_indices, day_offsets,
+            weights, handicaps,
+            self._ratings.ratings, self._ratings.rd,
+            self._ratings.last_played,
+            self.config.c, self.config.min_rd, self.config.max_rd,
+            n_train_days,
         )
 
     def reset(self) -> "WGlicko":

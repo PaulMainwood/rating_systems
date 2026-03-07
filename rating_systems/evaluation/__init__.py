@@ -12,6 +12,10 @@ from .optimizer import (
     optimize_whr,
     optimize_ttt,
     optimize_melo,
+    optimize_matern_ttt,
+    optimize_margin_ttt,
+    optimize_eigenvector,
+    optimize_gelo,
     optimize_all,
 )
 
@@ -35,5 +39,9 @@ __all__ = [
     "optimize_whr",
     "optimize_ttt",
     "optimize_melo",
+    "optimize_matern_ttt",
+    "optimize_margin_ttt",
+    "optimize_eigenvector",
+    "optimize_gelo",
     "optimize_all",
 ]

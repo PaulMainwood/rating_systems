@@ -164,3 +164,53 @@ def predict_single(
 ) -> float:
     """Predict win probability for a single matchup with optional handicap."""
     return _sigmoid((p1_rating - p2_rating + handicap) * np.log(10.0) / scale)
+
+
+@njit(cache=True, fastmath=True)
+def walk_forward_predict_update(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    day_offsets: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    ratings: np.ndarray,
+    k_factor: float,
+    scale: float,
+    n_train_days: int,
+) -> np.ndarray:
+    """Fused predict+update walk-forward in a single Numba call.
+
+    For each post-training day: predict all games using current ratings,
+    then update ratings sequentially. Training-period days are skipped
+    (already processed by fit()).
+
+    Returns predictions array (NaN for training period).
+    """
+    n_games = len(player1)
+    predictions = np.full(n_games, np.nan, dtype=np.float64)
+    log10_scale = np.log(10.0) / scale
+    n_days = len(day_offsets) - 1
+
+    for day_idx in range(n_train_days, n_days):
+        start = day_offsets[day_idx]
+        end = day_offsets[day_idx + 1]
+
+        # Predict before update
+        for i in range(start, end):
+            r1 = ratings[player1[i]]
+            r2 = ratings[player2[i]]
+            predictions[i] = _sigmoid((r1 - r2 + handicaps[i]) * log10_scale)
+
+        # Update sequentially
+        for i in range(start, end):
+            p1 = player1[i]
+            p2 = player2[i]
+            r1 = ratings[p1]
+            r2 = ratings[p2]
+            e1 = _sigmoid((r1 - r2 + handicaps[i]) * log10_scale)
+            delta = k_factor * weights[i] * (scores[i] - e1)
+            ratings[p1] = r1 + delta
+            ratings[p2] = r2 - delta
+
+    return predictions

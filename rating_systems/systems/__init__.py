@@ -48,6 +48,15 @@ from .wyuksel import WYuksel, WYukselConfig
 from .wtrueskill import WeightedTrueSkill, WTrueSkillConfig
 from .hodge import HodgeIntransitivity, HodgeConfig
 from .melo import MElo, MEloConfig
+from .wmelo import WMElo, WMEloConfig
+from .matern_ttt import MaternTTT, MaternTTTConfig
+from .wmatern_ttt import WeightedMaternTTT, WMaternTTTConfig
+from .margin_ttt import MarginTTT, MarginTTTConfig
+from .wmargin_ttt import WMarginTTT, WMarginTTTConfig
+from .eigenvector import EigenvectorCentrality, EigenvectorConfig
+from .weigenvector import WEigenvectorCentrality, WEigenvectorConfig
+from .gelo import GElo, GEloConfig
+from .wgelo import WGElo, WGEloConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -102,4 +111,31 @@ __all__ = [
     # mElo (multidimensional Elo with intransitivity)
     "MElo",
     "MEloConfig",
+    # Weighted mElo
+    "WMElo",
+    "WMEloConfig",
+    # Matérn 3/2 TTT
+    "MaternTTT",
+    "MaternTTTConfig",
+    # Weighted Matérn 3/2 TTT
+    "WeightedMaternTTT",
+    "WMaternTTTConfig",
+    # Margin TTT (Gaussian margin-of-victory)
+    "MarginTTT",
+    "MarginTTTConfig",
+    # Weighted Margin TTT
+    "WMarginTTT",
+    "WMarginTTTConfig",
+    # Eigenvector centrality (B-Score)
+    "EigenvectorCentrality",
+    "EigenvectorConfig",
+    # Weighted Eigenvector centrality
+    "WEigenvectorCentrality",
+    "WEigenvectorConfig",
+    # G-Elo (ordinal margin-of-victory)
+    "GElo",
+    "GEloConfig",
+    # Weighted G-Elo
+    "WGElo",
+    "WGEloConfig",
 ]

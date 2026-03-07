@@ -38,29 +38,21 @@ def hodge_intransitivity(
     j_idx = edge_flows[:, 1].astype(int)
     flows = edge_flows[:, 2]
 
-    # Build weighted graph Laplacian L_w (n x n)
-    # L_w[i,i] = sum of weights of edges incident to i
-    # L_w[i,j] = -weight(i,j) if edge exists
+    # Build weighted graph Laplacian L_w (n x n) — vectorized
     L_w = np.zeros((n_nodes, n_nodes))
-    for e in range(n_edges):
-        w = edge_weights[e]
-        ii, jj = i_idx[e], j_idx[e]
-        L_w[ii, ii] += w
-        L_w[jj, jj] += w
-        L_w[ii, jj] -= w
-        L_w[jj, ii] -= w
+    np.add.at(L_w, (i_idx, i_idx), edge_weights)
+    np.add.at(L_w, (j_idx, j_idx), edge_weights)
+    np.add.at(L_w, (i_idx, j_idx), -edge_weights)
+    np.add.at(L_w, (j_idx, i_idx), -edge_weights)
 
-    # Build divergence vector δ = d₀ᵀ W f (n,)
-    # For edge (i,j) oriented i→j: d₀ᵀ contributes -w*f at node i, +w*f at node j
+    # Build divergence vector δ = d₀ᵀ W f (n,) — vectorized
     div = np.zeros(n_nodes)
-    for e in range(n_edges):
-        w = edge_weights[e]
-        ii, jj = i_idx[e], j_idx[e]
-        div[ii] -= w * flows[e]
-        div[jj] += w * flows[e]
+    wf = edge_weights * flows
+    np.add.at(div, i_idx, -wf)
+    np.add.at(div, j_idx, wf)
 
-    # Solve L_w * s = δ for node potentials s (pseudoinverse since L is singular)
-    s = np.linalg.pinv(L_w) @ div
+    # Solve L_w * s = δ for node potentials s (lstsq since L is singular)
+    s, _, _, _ = np.linalg.lstsq(L_w, div, rcond=None)
 
     # Gradient flow: f_grad(i,j) = s[j] - s[i]
     f_grad = s[j_idx] - s[i_idx]

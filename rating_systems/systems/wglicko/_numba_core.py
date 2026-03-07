@@ -540,3 +540,133 @@ def predict_single_h(
     g = _g(combined_rd)
     exponent = -g * (r1 - r2 + handicap) / 400.0
     return 1.0 / (1.0 + math.pow(10.0, exponent))
+
+
+@njit(cache=True, fastmath=True)
+def walk_forward_predict_update(
+    player1: np.ndarray,
+    player2: np.ndarray,
+    scores: np.ndarray,
+    day_indices: np.ndarray,
+    day_offsets: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    ratings: np.ndarray,
+    rd: np.ndarray,
+    last_played: np.ndarray,
+    c: float,
+    min_rd: float,
+    max_rd: float,
+    n_train_days: int,
+) -> np.ndarray:
+    """Fused predict+update walk-forward in a single Numba call.
+
+    For each post-training day:
+    1. Predict using current ratings/RDs (before inactivity adjustment)
+    2. Adjust RD for inactivity
+    3. Batch-update ratings/RDs (simultaneous games within day)
+
+    Returns predictions array (NaN for training period).
+    """
+    n_games = len(player1)
+    predictions = np.full(n_games, np.nan, dtype=np.float64)
+    c_squared = c * c
+    n_days = len(day_offsets) - 1
+
+    for day_idx in range(n_train_days, n_days):
+        start = day_offsets[day_idx]
+        end = day_offsets[day_idx + 1]
+        current_day = day_indices[day_idx]
+        n_day_games = end - start
+
+        if n_day_games == 0:
+            continue
+
+        # Predict using current RD (before inactivity adjustment)
+        for i in range(start, end):
+            p1 = player1[i]
+            p2 = player2[i]
+            r1 = ratings[p1]
+            r2 = ratings[p2]
+            rd1 = rd[p1]
+            rd2 = rd[p2]
+            combined_rd = math.sqrt(rd1 * rd1 + rd2 * rd2)
+            g_val = _g(combined_rd)
+            exponent = -g_val * (r1 - r2 + handicaps[i]) / 400.0
+            predictions[i] = 1.0 / (1.0 + math.pow(10.0, exponent))
+
+        # Find active players
+        players_set = set()
+        for i in range(start, end):
+            players_set.add(player1[i])
+            players_set.add(player2[i])
+        active_players = np.array(list(players_set), dtype=np.int64)
+        n_players = len(active_players)
+
+        # RD inactivity growth
+        for i in range(n_players):
+            p = active_players[i]
+            days_inactive = current_day - last_played[p]
+            if days_inactive > 0:
+                new_rd = math.sqrt(rd[p] * rd[p] + c_squared * days_inactive)
+                rd[p] = min(max(new_rd, min_rd), max_rd)
+
+        # Store pre-period values
+        pre_ratings = ratings.copy()
+        pre_rd = rd.copy()
+
+        # Batch update: each active player
+        for i in range(n_players):
+            player = active_players[i]
+            player_rating = pre_ratings[player]
+
+            sum_g_sq_e = 0.0
+            sum_g_diff = 0.0
+            games_found = 0
+
+            for j in range(start, end):
+                opp = -1
+                score = 0.0
+                w_j = 1.0
+                h_j = 0.0
+
+                if player1[j] == player:
+                    opp = player2[j]
+                    score = scores[j]
+                    w_j = weights[j]
+                    h_j = handicaps[j]
+                elif player2[j] == player:
+                    opp = player1[j]
+                    score = 1.0 - scores[j]
+                    w_j = weights[j]
+                    h_j = -handicaps[j]
+
+                if opp >= 0:
+                    opp_rating = pre_ratings[opp]
+                    opp_rd = pre_rd[opp]
+                    g_val = _g(opp_rd)
+                    exponent = -g_val * (player_rating - opp_rating + h_j) / 400.0
+                    e = 1.0 / (1.0 + math.pow(10.0, exponent))
+
+                    sum_g_sq_e += w_j * g_val * g_val * e * (1.0 - e)
+                    sum_g_diff += w_j * g_val * (score - e)
+                    games_found += 1
+
+            if games_found > 0:
+                d_squared_inv = Q_SQUARED * sum_g_sq_e
+                if d_squared_inv > 1e-10:
+                    d_squared = 1.0 / d_squared_inv
+                else:
+                    d_squared = 1e10
+
+                rd_squared = pre_rd[player] ** 2
+                new_rd_squared = 1.0 / (1.0 / rd_squared + 1.0 / d_squared)
+                new_rd = math.sqrt(new_rd_squared)
+                new_rd = min(max(new_rd, min_rd), max_rd)
+
+                rating_change = Q * new_rd_squared * sum_g_diff
+                ratings[player] = player_rating + rating_change
+                rd[player] = new_rd
+                last_played[player] = current_day
+
+    return predictions

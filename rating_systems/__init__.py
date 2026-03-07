@@ -105,6 +105,29 @@ from .systems import (
     # mElo (multidimensional Elo with intransitivity)
     MElo,
     MEloConfig,
+    # Weighted mElo
+    WMElo,
+    WMEloConfig,
+    # Matérn 3/2 TTT
+    MaternTTT,
+    MaternTTTConfig,
+    WeightedMaternTTT,
+    WMaternTTTConfig,
+    # Margin TTT (Gaussian margin-of-victory)
+    MarginTTT,
+    MarginTTTConfig,
+    WMarginTTT,
+    WMarginTTTConfig,
+    # Eigenvector centrality (B-Score)
+    EigenvectorCentrality,
+    EigenvectorConfig,
+    WEigenvectorCentrality,
+    WEigenvectorConfig,
+    # G-Elo (ordinal margin-of-victory)
+    GElo,
+    GEloConfig,
+    WGElo,
+    WGEloConfig,
 )
 from .results import (
     FittedEloRatings,
@@ -173,6 +196,24 @@ __all__ = [
     "HodgeConfig",
     "MElo",
     "MEloConfig",
+    "WMElo",
+    "WMEloConfig",
+    "MaternTTT",
+    "MaternTTTConfig",
+    "WeightedMaternTTT",
+    "WMaternTTTConfig",
+    "MarginTTT",
+    "MarginTTTConfig",
+    "WMarginTTT",
+    "WMarginTTTConfig",
+    "EigenvectorCentrality",
+    "EigenvectorConfig",
+    "WEigenvectorCentrality",
+    "WEigenvectorConfig",
+    "GElo",
+    "GEloConfig",
+    "WGElo",
+    "WGEloConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",

@@ -27,6 +27,7 @@ from ._numba_core import (
     predict_single_h,
     get_top_n_indices,
     compute_conservative_rating,
+    walk_forward_predict_update,
 )
 
 
@@ -317,6 +318,33 @@ class WeightedTrueSkill(RatingSystem):
 
         self._fitted = True
         return self
+
+    def fused_walk_forward(
+        self,
+        player1: np.ndarray,
+        player2: np.ndarray,
+        scores: np.ndarray,
+        day_indices: np.ndarray,
+        day_offsets: np.ndarray,
+        weights: np.ndarray,
+        handicaps: np.ndarray,
+        n_train_days: int,
+    ) -> np.ndarray:
+        """Fused predict+update walk-forward in a single Numba call.
+
+        Eliminates Python per-day overhead. Modifies ratings in-place.
+        Returns predictions array (NaN for training period).
+        """
+        return walk_forward_predict_update(
+            player1, player2, scores, day_offsets,
+            weights, handicaps,
+            self._ratings.ratings,
+            self._ratings.rd,
+            self.config.beta,
+            self.config.tau,
+            self.config.min_sigma,
+            n_train_days,
+        )
 
     def get_fitted_ratings(self) -> "FittedTrueSkillRatings":
         """Get a queryable fitted ratings object."""
