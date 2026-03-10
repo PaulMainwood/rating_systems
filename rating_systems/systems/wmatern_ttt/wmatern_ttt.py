@@ -66,8 +66,8 @@ class WMaternTTTConfig:
     sigma: float = 6.0          # Marginal std dev (stationary)
     beta: float = 1.0           # Base performance noise
     lengthscale: float = 365.0  # Temporal correlation length (days)
-    max_iterations: int = 30
-    refit_max_iterations: int = 2
+    max_iterations: int = 50
+    refit_max_iterations: int = 1
     convergence_threshold: float = 1e-6
     refit_interval: int = 1
 
@@ -111,8 +111,8 @@ class WeightedMaternTTT(RatingSystem):
         sigma: float = 6.0,
         beta: float = 1.0,
         lengthscale: float = 365.0,
-        max_iterations: int = 30,
-        refit_max_iterations: int = 2,
+        max_iterations: int = 50,
+        refit_max_iterations: int = 1,
         convergence_threshold: float = 1e-6,
         refit_interval: int = 1,
         num_players: Optional[int] = None,

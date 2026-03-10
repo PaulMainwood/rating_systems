@@ -54,7 +54,7 @@ class MarginTTTConfig:
     gamma: float = 0.075
     margin_scale: float = 10.0     # normalised margin → skill units
     sigma_margin: float = 3.0      # observation noise (skill units)
-    max_iterations: int = 10
+    max_iterations: int = 50
     refit_max_iterations: int = 1
     convergence_threshold: float = 1e-6
     refit_interval: int = 1
@@ -96,7 +96,7 @@ class MarginTTT(RatingSystem):
         gamma: float = 0.075,
         margin_scale: float = 10.0,
         sigma_margin: float = 3.0,
-        max_iterations: int = 10,
+        max_iterations: int = 50,
         refit_max_iterations: int = 1,
         convergence_threshold: float = 1e-6,
         refit_interval: int = 1,

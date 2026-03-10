@@ -74,8 +74,8 @@ class WWHRConfig:
     w2: float = 300.0
     initial_rating: float = 1500.0
     initial_rd: float = 350.0
-    max_iterations: int = 50
-    refit_max_iterations: int = 5
+    max_iterations: int = 100
+    refit_max_iterations: int = 2
     refit_interval: int = 1
     convergence_threshold: float = 1e-6
     warm_start: bool = True
@@ -117,8 +117,8 @@ class WeightedWHR(RatingSystem):
         w2: float = 300.0,
         initial_rating: float = 1500.0,
         initial_rd: float = 350.0,
-        max_iterations: int = 50,
-        refit_max_iterations: int = 5,
+        max_iterations: int = 100,
+        refit_max_iterations: int = 2,
         refit_interval: int = 1,
         convergence_threshold: float = 1e-6,
         warm_start: bool = True,

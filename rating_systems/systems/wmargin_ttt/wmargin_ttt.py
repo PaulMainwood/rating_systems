@@ -54,10 +54,10 @@ class WMarginTTTConfig:
     gamma: float = 0.075
     margin_scale: float = 10.0
     sigma_margin: float = 3.0
-    max_iterations: int = 20
-    refit_max_iterations: int = 2
+    max_iterations: int = 50
+    refit_max_iterations: int = 1
     convergence_threshold: float = 1e-6
-    refit_interval: int = 2
+    refit_interval: int = 1
 
 
 class WMarginTTT(RatingSystem):
@@ -84,10 +84,10 @@ class WMarginTTT(RatingSystem):
         gamma: float = 0.075,
         margin_scale: float = 10.0,
         sigma_margin: float = 3.0,
-        max_iterations: int = 20,
-        refit_max_iterations: int = 2,
+        max_iterations: int = 50,
+        refit_max_iterations: int = 1,
         convergence_threshold: float = 1e-6,
-        refit_interval: int = 2,
+        refit_interval: int = 1,
         num_players: Optional[int] = None,
     ):
         self.config = WMarginTTTConfig(

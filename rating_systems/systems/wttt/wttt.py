@@ -53,7 +53,7 @@ class WTTTConfig:
     sigma: float = 3.8735      # Optimised TTT value
     beta: float = 2.3747       # Optimised TTT value
     gamma: float = 0.0804      # Optimised TTT value
-    max_iterations: int = 10   # Optimised TTT value
+    max_iterations: int = 50   # Canonical TTT default
     refit_max_iterations: int = 1
     convergence_threshold: float = 1e-6
     refit_interval: int = 1
@@ -94,7 +94,7 @@ class WeightedTTT(RatingSystem):
         sigma: float = 3.8735,
         beta: float = 2.3747,
         gamma: float = 0.0804,
-        max_iterations: int = 10,
+        max_iterations: int = 50,
         refit_max_iterations: int = 1,
         convergence_threshold: float = 1e-6,
         refit_interval: int = 1,
