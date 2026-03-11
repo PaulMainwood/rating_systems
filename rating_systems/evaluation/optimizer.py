@@ -189,6 +189,7 @@ class RatingSystemOptimizer:
         maxiter: int = 50,
         verbose: bool = True,
         x0: Optional[np.ndarray] = None,
+        ftol: Optional[float] = None,
         **kwargs,
     ) -> OptimizationResult:
         """
@@ -268,6 +269,8 @@ class RatingSystemOptimizer:
             # For L-BFGS-B, use larger finite-difference step size
             # Default eps (~1e-8) is too small for noisy log loss objectives
             options = {"maxiter": maxiter, "disp": False}
+            if ftol is not None:
+                options["ftol"] = ftol
             if method == "L-BFGS-B":
                 # Scale eps based on parameter ranges
                 # Use ~2% of parameter range for gradient estimation
@@ -323,6 +326,7 @@ def optimize_elo(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize Elo parameters.
@@ -358,6 +362,7 @@ def optimize_elo(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -372,6 +377,7 @@ def optimize_glicko(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize Glicko parameters.
@@ -408,6 +414,7 @@ def optimize_glicko(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -422,6 +429,7 @@ def optimize_glicko2(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize Glicko-2 parameters.
@@ -459,6 +467,7 @@ def optimize_glicko2(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -474,6 +483,7 @@ def optimize_stephenson(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize Stephenson parameters.
@@ -513,6 +523,7 @@ def optimize_stephenson(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -526,6 +537,7 @@ def optimize_whr(
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize WHR parameters.
@@ -563,6 +575,7 @@ def optimize_whr(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -578,6 +591,7 @@ def optimize_ttt(
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize TrueSkill Through Time parameters.
@@ -619,6 +633,7 @@ def optimize_ttt(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -634,6 +649,7 @@ def optimize_matern_ttt(
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize Matérn 3/2 TrueSkill Through Time parameters.
@@ -673,6 +689,7 @@ def optimize_matern_ttt(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -690,6 +707,7 @@ def optimize_margin_ttt(
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize MarginTTT parameters.
@@ -733,6 +751,7 @@ def optimize_margin_ttt(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -746,6 +765,7 @@ def optimize_trueskill(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize TrueSkill parameters.
@@ -782,6 +802,7 @@ def optimize_trueskill(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -795,6 +816,7 @@ def optimize_yuksel(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize Yuksel parameters.
@@ -831,6 +853,7 @@ def optimize_yuksel(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -847,6 +870,7 @@ def optimize_melo(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize mElo parameters.
@@ -894,6 +918,7 @@ def optimize_melo(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -909,6 +934,7 @@ def optimize_eigenvector(
     verbose: bool = True,
     fixed_params: Optional[Dict[str, Any]] = None,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize EigenvectorCentrality parameters.
@@ -948,6 +974,7 @@ def optimize_eigenvector(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
@@ -962,6 +989,7 @@ def optimize_gelo(
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> OptimizationResult:
     """
     Optimize G-Elo parameters.
@@ -999,6 +1027,7 @@ def optimize_gelo(
         maxiter=maxiter,
         verbose=verbose,
         x0=x0,
+        **kwargs,
     )
 
 
