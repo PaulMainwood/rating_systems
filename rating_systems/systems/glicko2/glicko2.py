@@ -79,6 +79,11 @@ class Glicko2(RatingSystem):
         tau: float = 0.5,
         num_players: Optional[int] = None,
     ):
+        # Volatility and tau must be positive for the algorithm to be well-defined
+        if initial_volatility <= 0:
+            raise ValueError(f"initial_volatility must be positive, got {initial_volatility}")
+        if tau <= 0:
+            raise ValueError(f"tau must be positive, got {tau}")
         self.config = Glicko2Config(
             initial_rating=initial_rating,
             initial_rd=initial_rd,

@@ -5,10 +5,10 @@ Imports shared functions from WHR and adds weighted variants where per-game
 weights scale the gradient and Hessian contributions. Virtual game priors
 and Wiener process priors are NOT weighted (they're structural, not data).
 
-Native handicap support: per-game handicaps h_g shift the Bradley-Terry
-probability in the gradient/Hessian:
-    p_win = sigmoid(r_i - r_j + h_g)
-where h_g > 0 favours the player whose perspective we're computing from.
+Learned-α handicap support: per-game handicaps are computed as
+    h_g = Σ_k α_k * feature_k_g
+where α values are learned jointly with player ratings via Newton steps.
+The pd_game_handicaps array is recomputed whenever α changes.
 """
 
 import math
@@ -1120,3 +1120,153 @@ def run_all_iterations_accelerated_weighted(
     return max_iterations
 
 
+# =============================================================================
+# Learned-α handicap functions
+# =============================================================================
+
+@njit(cache=True)
+def fill_game_arrays_learned_h(
+    n_games: int,
+    pd1_indices: np.ndarray,
+    pd2_indices: np.ndarray,
+    scores: np.ndarray,
+    weights: np.ndarray,
+    handicaps: np.ndarray,
+    pd_game_offsets: np.ndarray,
+    pd_game_opp_pd: np.ndarray,
+    pd_game_score: np.ndarray,
+    pd_game_weights: np.ndarray,
+    pd_game_handicaps: np.ndarray,
+    pd_game_to_game_idx: np.ndarray,
+    pd_game_sign: np.ndarray,
+) -> None:
+    """
+    Fill game arrays with weights and handicaps, plus mapping arrays.
+
+    pd_game_to_game_idx[slot] = original game index (for feature lookup).
+    pd_game_sign[slot] = +1.0 for player1's perspective, -1.0 for player2's.
+
+    These mapping arrays allow recomputing pd_game_handicaps from
+    the feature matrix and α without rebuilding the entire CSR structure.
+    """
+    pd_game_pos = pd_game_offsets[:-1].copy()
+
+    for i in range(n_games):
+        pd1 = pd1_indices[i]
+        pd2 = pd2_indices[i]
+        score = scores[i]
+        w = weights[i]
+        h = handicaps[i]
+
+        # Player 1's perspective
+        pos1 = pd_game_pos[pd1]
+        pd_game_opp_pd[pos1] = pd2
+        pd_game_score[pos1] = score
+        pd_game_weights[pos1] = w
+        pd_game_handicaps[pos1] = h
+        pd_game_to_game_idx[pos1] = i
+        pd_game_sign[pos1] = 1.0
+        pd_game_pos[pd1] += 1
+
+        # Player 2's perspective (negate handicap)
+        pos2 = pd_game_pos[pd2]
+        pd_game_opp_pd[pos2] = pd1
+        pd_game_score[pos2] = 1.0 - score
+        pd_game_weights[pos2] = w
+        pd_game_handicaps[pos2] = -h
+        pd_game_to_game_idx[pos2] = i
+        pd_game_sign[pos2] = -1.0
+        pd_game_pos[pd2] += 1
+
+
+@njit(cache=True)
+def recompute_pd_game_handicaps(
+    pd_game_handicaps: np.ndarray,
+    pd_game_to_game_idx: np.ndarray,
+    pd_game_sign: np.ndarray,
+    handicap_features: np.ndarray,
+    alpha: np.ndarray,
+) -> None:
+    """
+    Recompute pd_game_handicaps from feature matrix and current α.
+
+    For each slot in the CSR game array:
+        game_idx = pd_game_to_game_idx[slot]
+        sign = pd_game_sign[slot]  (+1 for p1, -1 for p2)
+        h = sign * Σ_k α_k * handicap_features[game_idx, k]
+    """
+    n_slots = len(pd_game_handicaps)
+    n_features = len(alpha)
+
+    for slot in range(n_slots):
+        game_idx = pd_game_to_game_idx[slot]
+        sign = pd_game_sign[slot]
+        h = 0.0
+        for k in range(n_features):
+            h += alpha[k] * handicap_features[game_idx, k]
+        pd_game_handicaps[slot] = sign * h
+
+
+@njit(cache=True, fastmath=True)
+def compute_alpha_gradient_hessian_wwhr(
+    pd_r: np.ndarray,
+    pd_game_offsets: np.ndarray,
+    pd_game_opp_pd: np.ndarray,
+    pd_game_score: np.ndarray,
+    pd_game_weights: np.ndarray,
+    pd_game_handicaps: np.ndarray,
+    pd_game_to_game_idx: np.ndarray,
+    pd_game_sign: np.ndarray,
+    handicap_features: np.ndarray,
+    n_features: int,
+    gradient: np.ndarray,
+    hessian: np.ndarray,
+) -> None:
+    """
+    Compute gradient and diagonal Hessian of log-likelihood w.r.t. α.
+
+    For each game (visited once via player1's CSR entries only, i.e.
+    where pd_game_sign == +1.0):
+
+        p_win = sigmoid(r_p1 - r_p2 + h)
+        residual = score - p_win
+        fisher = p_win * (1 - p_win)
+
+        For each feature k:
+            grad_k += w * features[game, k] * residual
+            hess_k -= w * features[game, k]^2 * fisher
+
+    We iterate over all pd_game slots and only process those with
+    sign == +1.0 to avoid double-counting.
+    """
+    for k in range(n_features):
+        gradient[k] = 0.0
+        hessian[k] = 0.0
+
+    total_pd = len(pd_r)
+    for pd_idx in range(total_pd):
+        r_i = pd_r[pd_idx]
+        game_start = pd_game_offsets[pd_idx]
+        game_end = pd_game_offsets[pd_idx + 1]
+
+        for g in range(game_start, game_end):
+            sign = pd_game_sign[g]
+            if sign < 0.5:
+                # Player 2's perspective — skip to avoid double-counting
+                continue
+
+            opp_pd = pd_game_opp_pd[g]
+            opp_r = pd_r[opp_pd]
+            score = pd_game_score[g]
+            w = pd_game_weights[g]
+            h = pd_game_handicaps[g]
+
+            p_win = sigmoid(r_i - opp_r + h)
+            residual = score - p_win
+            fisher = p_win * (1.0 - p_win)
+
+            game_idx = pd_game_to_game_idx[g]
+            for k in range(n_features):
+                fk = handicap_features[game_idx, k]
+                gradient[k] += w * fk * residual
+                hessian[k] -= w * fk * fk * fisher

@@ -109,6 +109,7 @@ class RatingSystemOptimizer:
         self._start_time = 0.0
         self._verbose = False
         self._param_names: List[str] = []
+        self._bounds: Optional[List[Tuple[float, float]]] = None
 
     def _objective(self, x: np.ndarray) -> float:
         """
@@ -120,6 +121,10 @@ class RatingSystemOptimizer:
         Returns:
             Log loss (to minimize)
         """
+        # Clamp parameters to bounds (safety net for methods that may violate)
+        if self._bounds is not None:
+            x = np.clip(x, [b[0] for b in self._bounds], [b[1] for b in self._bounds])
+
         # Convert array to parameter dict
         params = {name: val for name, val in zip(self._param_names, x)}
         params.update(self.fixed_params)
@@ -214,6 +219,7 @@ class RatingSystemOptimizer:
 
         self._param_names = list(param_bounds.keys())
         bounds = [param_bounds[name] for name in self._param_names]
+        self._bounds = bounds
 
         if verbose:
             print(f"\n{'='*60}")
@@ -268,11 +274,13 @@ class RatingSystemOptimizer:
                 eps_values = np.array([(b[1] - b[0]) * 0.02 for b in bounds])
                 options["eps"] = eps_values
 
+            # Powell and Nelder-Mead support bounds since scipy 1.7.0
+            supports_bounds = {"L-BFGS-B", "SLSQP", "Powell", "Nelder-Mead"}
             result = minimize(
                 self._objective,
                 x0,
                 method=method,
-                bounds=bounds if method in ["L-BFGS-B", "SLSQP"] else None,
+                bounds=bounds if method in supports_bounds else None,
                 options=options,
                 **kwargs,
             )
@@ -405,9 +413,9 @@ def optimize_glicko(
 
 def optimize_glicko2(
     dataset: GameDataset,
-    initial_rd_bounds: Tuple[float, float] = (200, 500),
-    initial_volatility_bounds: Tuple[float, float] = (0.03, 0.09),
-    tau_bounds: Tuple[float, float] = (0.3, 1.2),
+    initial_rd_bounds: Tuple[float, float] = (200, 5000),
+    initial_volatility_bounds: Tuple[float, float] = (0.03, 0.15),
+    tau_bounds: Tuple[float, float] = (-1.0, 5.0),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
