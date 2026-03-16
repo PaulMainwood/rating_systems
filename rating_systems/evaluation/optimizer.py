@@ -271,6 +271,8 @@ class RatingSystemOptimizer:
             options = {"maxiter": maxiter, "disp": False}
             if ftol is not None:
                 options["ftol"] = ftol
+                if method == "Powell":
+                    options["xtol"] = ftol
             if method == "L-BFGS-B":
                 # Scale eps based on parameter ranges
                 # Use ~2% of parameter range for gradient estimation
@@ -318,23 +320,22 @@ class RatingSystemOptimizer:
 
 def optimize_elo(
     dataset: GameDataset,
-    k_bounds: Tuple[float, float] = (4, 64),
-    scale_bounds: Tuple[float, float] = (200, 600),
+    k_bounds: Tuple[float, float] = (4, 100),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
     **kwargs,
 ) -> OptimizationResult:
     """
-    Optimize Elo parameters.
+    Optimize Elo parameters (k_factor only; scale fixed at 400).
 
     Args:
         dataset: Game dataset
         k_bounds: Bounds for K-factor
-        scale_bounds: Bounds for scale (logistic parameter)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
         train_ratio: Fraction of days for initial training (default 0.7)
@@ -351,12 +352,12 @@ def optimize_elo(
         dataset,
         train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
         param_bounds={
             "k_factor": k_bounds,
-            "scale": scale_bounds,
         },
         method=method,
         maxiter=maxiter,
@@ -368,12 +369,11 @@ def optimize_elo(
 
 def optimize_glicko(
     dataset: GameDataset,
-    initial_rd_bounds: Tuple[float, float] = (200, 500),
-    rd_decay_bounds: Tuple[float, float] = (10, 100),
     c_bounds: Tuple[float, float] = (20, 100),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
@@ -384,8 +384,6 @@ def optimize_glicko(
 
     Args:
         dataset: Game dataset
-        initial_rd_bounds: Bounds for initial rating deviation
-        rd_decay_bounds: Bounds for RD decay rate
         c_bounds: Bounds for c parameter (RD increase per period)
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
@@ -403,11 +401,11 @@ def optimize_glicko(
         dataset,
         train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
         param_bounds={
-            "initial_rd": initial_rd_bounds,
             "c": c_bounds,
         },
         method=method,
@@ -420,12 +418,12 @@ def optimize_glicko(
 
 def optimize_glicko2(
     dataset: GameDataset,
-    initial_rd_bounds: Tuple[float, float] = (200, 5000),
     initial_volatility_bounds: Tuple[float, float] = (0.03, 0.15),
     tau_bounds: Tuple[float, float] = (-1.0, 5.0),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
@@ -436,7 +434,6 @@ def optimize_glicko2(
 
     Args:
         dataset: Game dataset
-        initial_rd_bounds: Bounds for initial rating deviation
         initial_volatility_bounds: Bounds for initial volatility
         tau_bounds: Bounds for tau (system constant)
         initial_rating: Fixed initial rating
@@ -455,11 +452,11 @@ def optimize_glicko2(
         dataset,
         train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
         param_bounds={
-            "initial_rd": initial_rd_bounds,
             "initial_volatility": initial_volatility_bounds,
             "tau": tau_bounds,
         },
@@ -473,13 +470,13 @@ def optimize_glicko2(
 
 def optimize_stephenson(
     dataset: GameDataset,
-    initial_rd_bounds: Tuple[float, float] = (200, 500),
     cval_bounds: Tuple[float, float] = (5, 50),
     hval_bounds: Tuple[float, float] = (0, 30),
     lambda_bounds: Tuple[float, float] = (0, 10),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
@@ -490,7 +487,6 @@ def optimize_stephenson(
 
     Args:
         dataset: Game dataset
-        initial_rd_bounds: Bounds for initial rating deviation
         cval_bounds: Bounds for RD increase per period of inactivity
         hval_bounds: Bounds for additional RD increase per game
         lambda_bounds: Bounds for neighbourhood shrinkage parameter
@@ -510,11 +506,11 @@ def optimize_stephenson(
         dataset,
         train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
         param_bounds={
-            "initial_rd": initial_rd_bounds,
             "cval": cval_bounds,
             "hval": hval_bounds,
             "lambda_param": lambda_bounds,
@@ -762,6 +758,7 @@ def optimize_trueskill(
     beta_bounds: Tuple[float, float] = (2, 8),
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
@@ -790,6 +787,7 @@ def optimize_trueskill(
         dataset,
         train_ratio=train_ratio,
         fixed_params={},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
@@ -813,6 +811,7 @@ def optimize_yuksel(
     scaling_factor_bounds: Tuple[float, float] = (0.5, 1.0),
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
@@ -841,6 +840,7 @@ def optimize_yuksel(
         dataset,
         train_ratio=train_ratio,
         fixed_params={"initial_rating": 1500.0},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
@@ -859,31 +859,26 @@ def optimize_yuksel(
 
 def optimize_melo(
     dataset: GameDataset,
-    k_bounds: Tuple[float, float] = (4, 64),
+    k_bounds: Tuple[float, float] = (4, 100),
     c_factor_bounds: Tuple[float, float] = (0.5, 64),
-    scale_bounds: Tuple[float, float] = (200, 600),
     initial_rating: float = 1500.0,
     k_dim: int = 1,
     initial_c_std: float = 0.01,
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
     **kwargs,
 ) -> OptimizationResult:
     """
-    Optimize mElo parameters.
-
-    Searches over k_factor, c_factor, and scale. The intransitivity
-    dimension (k_dim) and initial style vector scale (initial_c_std)
-    are fixed during optimization.
+    Optimize mElo parameters (k_factor + c_factor; scale fixed at 400).
 
     Args:
         dataset: Game dataset
         k_bounds: Bounds for K-factor (scalar rating update)
         c_factor_bounds: Bounds for style vector learning rate
-        scale_bounds: Bounds for logistic scale
         initial_rating: Fixed initial rating
         k_dim: Fixed intransitivity dimension (default: 1)
         initial_c_std: Fixed initial style vector std (default: 0.01)
@@ -906,13 +901,13 @@ def optimize_melo(
             "k_dim": k_dim,
             "initial_c_std": initial_c_std,
         },
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
         param_bounds={
             "k_factor": k_bounds,
             "c_factor": c_factor_bounds,
-            "scale": scale_bounds,
         },
         method=method,
         maxiter=maxiter,
@@ -981,23 +976,22 @@ def optimize_eigenvector(
 def optimize_gelo(
     dataset: GameDataset,
     k_bounds: Tuple[float, float] = (4, 100),
-    scale_bounds: Tuple[float, float] = (200, 600),
     threshold_spread_bounds: Tuple[float, float] = (0.1, 2.0),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
     method: str = "differential_evolution",
     verbose: bool = True,
     x0: Optional[np.ndarray] = None,
     **kwargs,
 ) -> OptimizationResult:
     """
-    Optimize G-Elo parameters.
+    Optimize G-Elo parameters (k_factor + threshold_spread; scale fixed at 400).
 
     Args:
         dataset: Game dataset
         k_bounds: Bounds for K-factor
-        scale_bounds: Bounds for logistic scale
         threshold_spread_bounds: Bounds for ordinal threshold spacing
         initial_rating: Fixed initial rating
         maxiter: Maximum optimization iterations
@@ -1015,12 +1009,12 @@ def optimize_gelo(
         dataset,
         train_ratio=train_ratio,
         fixed_params={"initial_rating": initial_rating},
+        max_test_days=max_test_days,
     )
 
     return optimizer.optimize(
         param_bounds={
             "k_factor": k_bounds,
-            "scale": scale_bounds,
             "threshold_spread": threshold_spread_bounds,
         },
         method=method,

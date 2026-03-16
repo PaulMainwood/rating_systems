@@ -38,7 +38,7 @@ class WStephensonConfig:
     """Configuration for Weighted Stephenson rating system."""
 
     initial_rating: float = 1500.0
-    initial_rd: float = 350.0
+    initial_rd: float = 600.0
     min_rd: float = 30.0
     max_rd: float = 350.0
     cval: float = 10.0
@@ -82,7 +82,7 @@ class WStephenson(RatingSystem):
     def __init__(
         self,
         initial_rating: float = 1500.0,
-        initial_rd: float = 350.0,
+        initial_rd: float = 600.0,
         min_rd: float = 30.0,
         max_rd: float = 350.0,
         cval: float = 10.0,

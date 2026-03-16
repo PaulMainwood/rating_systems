@@ -40,7 +40,7 @@ class WGlickoConfig:
     """Configuration for Weighted Glicko rating system."""
 
     initial_rating: float = 1500.0
-    initial_rd: float = 350.0
+    initial_rd: float = 600.0
     min_rd: float = 30.0
     max_rd: float = 350.0
     c: float = 34.6
@@ -76,7 +76,7 @@ class WGlicko(RatingSystem):
     def __init__(
         self,
         initial_rating: float = 1500.0,
-        initial_rd: float = 350.0,
+        initial_rd: float = 600.0,
         min_rd: float = 30.0,
         max_rd: float = 350.0,
         c: float = 34.6,

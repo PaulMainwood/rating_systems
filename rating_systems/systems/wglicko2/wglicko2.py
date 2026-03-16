@@ -37,7 +37,7 @@ class WGlicko2Config:
     """Configuration for Weighted Glicko-2 rating system."""
 
     initial_rating: float = 1500.0
-    initial_rd: float = 350.0
+    initial_rd: float = 600.0
     initial_volatility: float = 0.06
     tau: float = 0.5
     epsilon: float = 0.000001
@@ -73,7 +73,7 @@ class WGlicko2(RatingSystem):
     def __init__(
         self,
         initial_rating: float = 1500.0,
-        initial_rd: float = 350.0,
+        initial_rd: float = 600.0,
         initial_volatility: float = 0.06,
         tau: float = 0.5,
         num_players: Optional[int] = None,

@@ -50,7 +50,7 @@ class WHRConfig:
 
     w2: float = 300.0  # Wiener variance per time unit (Elo² per day)
     initial_rating: float = 1500.0  # Initial Elo-scale rating
-    initial_rd: float = 350.0  # Initial rating deviation (uncertainty)
+    initial_rd: float = 600.0  # Initial rating deviation (uncertainty)
     max_iterations: int = 100  # Maximum Newton-Raphson iterations for initial fit
     refit_max_iterations: int = 2  # Max iterations for refits
     refit_interval: int = 1  # Days between refits during walk-forward (1 = every day)
@@ -104,7 +104,7 @@ class WHR(RatingSystem):
         self,
         w2: float = 300.0,
         initial_rating: float = 1500.0,
-        initial_rd: float = 350.0,
+        initial_rd: float = 600.0,
         max_iterations: int = 100,
         refit_max_iterations: int = 2,
         refit_interval: int = 1,

@@ -31,7 +31,7 @@ class GlickoConfig:
     """Configuration for Glicko rating system."""
 
     initial_rating: float = 1500.0
-    initial_rd: float = 350.0
+    initial_rd: float = 600.0
     min_rd: float = 30.0
     max_rd: float = 350.0
     c: float = 34.6  # RD increase per rating period of inactivity
@@ -71,7 +71,7 @@ class Glicko(RatingSystem):
     def __init__(
         self,
         initial_rating: float = 1500.0,
-        initial_rd: float = 350.0,
+        initial_rd: float = 600.0,
         min_rd: float = 30.0,
         max_rd: float = 350.0,
         c: float = 34.6,

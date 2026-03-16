@@ -44,7 +44,7 @@ class StephensonConfig:
     """Configuration for Stephenson rating system."""
 
     initial_rating: float = 1500.0  # Starting rating (use 2200 for chess conventions)
-    initial_rd: float = 350.0       # Starting rating deviation
+    initial_rd: float = 600.0       # Starting rating deviation
     min_rd: float = 30.0            # Minimum RD
     max_rd: float = 350.0           # Maximum RD
     cval: float = 10.0              # RD increase per period of inactivity
@@ -98,7 +98,7 @@ class Stephenson(RatingSystem):
     def __init__(
         self,
         initial_rating: float = 1500.0,
-        initial_rd: float = 350.0,
+        initial_rd: float = 600.0,
         min_rd: float = 30.0,
         max_rd: float = 350.0,
         cval: float = 10.0,
