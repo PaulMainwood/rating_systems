@@ -41,9 +41,19 @@ def _update_volatility(
     epsilon: float,
 ) -> float:
     """Update volatility using iterative algorithm (Step 5)."""
+    # Guard: if sigma is degenerate, return unchanged
+    if sigma < 1e-15:
+        return sigma
     a = math.log(sigma * sigma)
     phi_sq = phi * phi
     delta_sq = delta * delta
+
+    def _f(x):
+        ex = math.exp(x)
+        d = phi_sq + v + ex
+        if d < 1e-30:
+            return 0.0
+        return ex * (delta_sq - d) / (2.0 * d * d) - (x - a) / (tau * tau)
 
     # Set initial bounds
     A = a
@@ -53,27 +63,15 @@ def _update_volatility(
         k = 1
         while True:
             x = a - k * tau
-            ex = math.exp(x)
-            num1 = ex * (delta_sq - phi_sq - v - ex)
-            den1 = 2.0 * ((phi_sq + v + ex) ** 2)
-            f_val = num1 / den1 - (x - a) / (tau * tau)
-            if f_val >= 0:
+            if _f(x) >= 0:
                 break
             k += 1
-            if k > 100:  # Safety limit
+            if k > 100:
                 break
         B = a - k * tau
 
-    # Compute f(A) and f(B)
-    ex_A = math.exp(A)
-    num1_A = ex_A * (delta_sq - phi_sq - v - ex_A)
-    den1_A = 2.0 * ((phi_sq + v + ex_A) ** 2)
-    f_A = num1_A / den1_A - (A - a) / (tau * tau)
-
-    ex_B = math.exp(B)
-    num1_B = ex_B * (delta_sq - phi_sq - v - ex_B)
-    den1_B = 2.0 * ((phi_sq + v + ex_B) ** 2)
-    f_B = num1_B / den1_B - (B - a) / (tau * tau)
+    f_A = _f(A)
+    f_B = _f(B)
 
     # Iterative algorithm
     iterations = 0
@@ -85,10 +83,7 @@ def _update_volatility(
             break
         C = A + (A - B) * f_A / denom
 
-        ex_C = math.exp(C)
-        num1_C = ex_C * (delta_sq - phi_sq - v - ex_C)
-        den1_C = 2.0 * ((phi_sq + v + ex_C) ** 2)
-        f_C = num1_C / den1_C - (C - a) / (tau * tau)
+        f_C = _f(C)
 
         if f_C * f_B <= 0:
             A = B
@@ -148,6 +143,9 @@ def _update_player_glicko2(
 
     # Step 6: Update phi*
     phi_star = math.sqrt(player_phi * player_phi + new_sigma * new_sigma)
+    # Guard against phi_star == 0 (can happen with extreme weights)
+    if phi_star < 1e-15:
+        phi_star = 1e-15
 
     # Step 7: Update rating and RD
     new_phi = 1.0 / math.sqrt(1.0 / (phi_star * phi_star) + 1.0 / v)
