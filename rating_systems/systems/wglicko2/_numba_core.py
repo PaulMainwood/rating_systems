@@ -145,6 +145,9 @@ def _update_player_wglicko2_h(
     delta = v * delta_sum
     new_sigma = _update_volatility(player_sigma, player_phi, v, delta, tau, epsilon)
     phi_star = math.sqrt(player_phi * player_phi + new_sigma * new_sigma)
+    # Guard against phi_star == 0 (can happen with extreme weights)
+    if phi_star < 1e-15:
+        phi_star = 1e-15
     new_phi = 1.0 / math.sqrt(1.0 / (phi_star * phi_star) + 1.0 / v)
     new_mu = player_mu + new_phi * new_phi * delta_sum
 
