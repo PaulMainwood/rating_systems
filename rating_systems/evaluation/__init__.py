@@ -16,6 +16,7 @@ from .optimizer import (
     optimize_margin_ttt,
     optimize_eigenvector,
     optimize_gelo,
+    optimize_disc,
     optimize_all,
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "optimize_margin_ttt",
     "optimize_eigenvector",
     "optimize_gelo",
+    "optimize_disc",
     "optimize_all",
 ]

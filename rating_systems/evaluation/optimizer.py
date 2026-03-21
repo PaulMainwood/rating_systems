@@ -976,7 +976,7 @@ def optimize_eigenvector(
 def optimize_gelo(
     dataset: GameDataset,
     k_bounds: Tuple[float, float] = (4, 100),
-    threshold_spread_bounds: Tuple[float, float] = (0.1, 2.0),
+    threshold_spread_bounds: Tuple[float, float] = (2.0, 20.0),
     initial_rating: float = 1500.0,
     maxiter: int = 30,
     train_ratio: float = 0.7,
@@ -1016,6 +1016,47 @@ def optimize_gelo(
         param_bounds={
             "k_factor": k_bounds,
             "threshold_spread": threshold_spread_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
+        **kwargs,
+    )
+
+
+def optimize_disc(
+    dataset: GameDataset,
+    k_bounds: Tuple[float, float] = (4, 100),
+    consistency_lr_bounds: Tuple[float, float] = (0.01, 1.0),
+    initial_rating: float = 1500.0,
+    initial_consistency: float = 1.0,
+    maxiter: int = 30,
+    train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
+    **kwargs,
+) -> OptimizationResult:
+    """Optimise Disc parameters (k_factor + consistency_lr; scale fixed at 400)."""
+    from ..systems.disc import Disc
+
+    optimizer = RatingSystemOptimizer(
+        Disc,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params={
+            "initial_rating": initial_rating,
+            "initial_consistency": initial_consistency,
+        },
+        max_test_days=max_test_days,
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "k_factor": k_bounds,
+            "consistency_lr": consistency_lr_bounds,
         },
         method=method,
         maxiter=maxiter,

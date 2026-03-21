@@ -128,6 +128,14 @@ from .systems import (
     GEloConfig,
     WGElo,
     WGEloConfig,
+    # Disc decomposition (skill + consistency)
+    Disc,
+    DiscConfig,
+    WDisc,
+    WDiscConfig,
+    # KickScore (GP paired comparisons)
+    KickScoreRating,
+    KickScoreConfig,
 )
 from .results import (
     FittedEloRatings,
@@ -214,6 +222,12 @@ __all__ = [
     "GEloConfig",
     "WGElo",
     "WGEloConfig",
+    "Disc",
+    "DiscConfig",
+    "WDisc",
+    "WDiscConfig",
+    "KickScoreRating",
+    "KickScoreConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",

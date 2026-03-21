@@ -72,6 +72,9 @@ class WTTTConfig:
     refit_interval: int = 1
     # Bayesian α learning (prior variance for N(0, σ²_prior · I))
     alpha_prior_variance: float = 10.0
+    # Time-warp margin penalty (days): decisive wins stay at real time,
+    # close wins are pushed into the past by up to this many days.
+    margin_time_penalty: float = 0.0
 
 
 class WeightedTTT(RatingSystem):
@@ -121,6 +124,7 @@ class WeightedTTT(RatingSystem):
         convergence_threshold: float = 1e-6,
         refit_interval: int = 1,
         alpha_prior_variance: float = 10.0,
+        margin_time_penalty: float = 0.0,
         num_players: Optional[int] = None,
     ):
         self.config = WTTTConfig(
@@ -133,6 +137,7 @@ class WeightedTTT(RatingSystem):
             convergence_threshold=convergence_threshold,
             refit_interval=refit_interval,
             alpha_prior_variance=alpha_prior_variance,
+            margin_time_penalty=margin_time_penalty,
         )
 
         # Game data arrays
@@ -196,6 +201,7 @@ class WeightedTTT(RatingSystem):
         self._accum_days: List[np.ndarray] = []
         self._accum_weights: List[np.ndarray] = []
         self._accum_handicap_features: List[np.ndarray] = []
+        self._accum_margin_sq: List[np.ndarray] = []
         self._last_refit_day: Optional[int] = None
 
         super().__init__(num_players=num_players)
@@ -551,6 +557,7 @@ class WeightedTTT(RatingSystem):
         weights: Optional[np.ndarray] = None,
         handicap_features: Optional[np.ndarray] = None,
         handicap_feature_names: Optional[List[str]] = None,
+        margin_sq: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "WeightedTTT":
@@ -567,6 +574,9 @@ class WeightedTTT(RatingSystem):
                 The system learns scaling factors α internally.
                 If None, no handicaps are applied.
             handicap_feature_names: Optional names for each feature column.
+            margin_sq: Per-game squared margin in [0, 1] for time-warp.
+                When margin_time_penalty > 0, games are shifted into the
+                past: effective_day = real_day - penalty * (1 - margin_sq).
             end_day: Last day to include (inclusive).
             player_names: Optional mapping of player_id -> name
 
@@ -613,6 +623,13 @@ class WeightedTTT(RatingSystem):
             end = day_offsets[d + 1]
             days[start:end] = day_indices[d]
 
+        # Apply time-warp: shift close wins into the past
+        if margin_sq is not None and self.config.margin_time_penalty > 0:
+            days = np.round(
+                days.astype(np.float64)
+                - self.config.margin_time_penalty * (1.0 - margin_sq)
+            ).astype(np.int32)
+
         # Build data structures
         self._build_batch_structure(player1, player2, scores, days, weights,
                                     handicap_features=handicap_features)
@@ -649,6 +666,10 @@ class WeightedTTT(RatingSystem):
                 self._accum_handicap_features = [handicap_features.copy()]
             else:
                 self._accum_handicap_features = []
+            if margin_sq is not None:
+                self._accum_margin_sq = [margin_sq.copy()]
+            else:
+                self._accum_margin_sq = []
             self._last_refit_day = self._current_day
 
         return self
@@ -810,11 +831,18 @@ class WeightedTTT(RatingSystem):
         batch: GameBatch,
         weights: np.ndarray,
         handicap_features: Optional[np.ndarray] = None,
+        margin_sq: Optional[np.ndarray] = None,
     ) -> "WeightedTTT":
         """
         Incrementally update with new games, weights, and optional features.
 
         Accumulates data and refits periodically based on refit_interval.
+
+        Args:
+            batch: New game batch
+            weights: Per-game weights for the batch
+            handicap_features: Raw feature matrix (n_batch, n_features)
+            margin_sq: Per-game squared margin in [0, 1] for time-warp.
         """
         if not self._fitted:
             raise ValueError("Model must be fitted before updating. Call fit() first.")
@@ -823,11 +851,34 @@ class WeightedTTT(RatingSystem):
             return self
 
         n_games = len(batch)
-        days_array = np.full(n_games, batch.day, dtype=np.int32)
+
+        # Compute effective days with time-warp
+        if margin_sq is not None and self.config.margin_time_penalty > 0:
+            days_array = np.round(
+                float(batch.day)
+                - self.config.margin_time_penalty * (1.0 - margin_sq)
+            ).astype(np.int32)
+        else:
+            days_array = np.full(n_games, batch.day, dtype=np.int32)
+
         self._accum_p1.append(batch.player1.copy())
         self._accum_p2.append(batch.player2.copy())
         self._accum_scores.append(batch.scores.copy())
         self._accum_days.append(days_array)
+
+        # Store margin_sq for future refitting
+        if margin_sq is not None:
+            if not self._accum_margin_sq:
+                # fit() had no margin_sq — pad zeros for prior batches
+                for p1_arr in self._accum_p1[:-1]:
+                    self._accum_margin_sq.append(
+                        np.zeros(len(p1_arr), dtype=np.float64)
+                    )
+            self._accum_margin_sq.append(margin_sq.copy())
+        elif self._accum_margin_sq:
+            self._accum_margin_sq.append(
+                np.zeros(n_games, dtype=np.float64)
+            )
         self._accum_weights.append(np.asarray(weights, dtype=np.float64).copy())
 
         if handicap_features is not None:
@@ -960,6 +1011,7 @@ class WeightedTTT(RatingSystem):
         state["_accum_days"] = [a.copy() for a in self._accum_days]
         state["_accum_weights"] = [a.copy() for a in self._accum_weights]
         state["_accum_handicap_features"] = [a.copy() for a in self._accum_handicap_features]
+        state["_accum_margin_sq"] = [a.copy() for a in self._accum_margin_sq]
         state["_handicap_feature_names"] = (
             list(self._handicap_feature_names) if self._handicap_feature_names else None
         )
@@ -996,6 +1048,7 @@ class WeightedTTT(RatingSystem):
         self._accum_days = [a.copy() for a in state["_accum_days"]]
         self._accum_weights = [a.copy() for a in state["_accum_weights"]]
         self._accum_handicap_features = [a.copy() for a in state["_accum_handicap_features"]]
+        self._accum_margin_sq = [a.copy() for a in state.get("_accum_margin_sq", [])]
         self._handicap_feature_names = state.get("_handicap_feature_names")
 
     def save_state(self, path: str) -> None:
@@ -1055,6 +1108,7 @@ class WeightedTTT(RatingSystem):
                 "sigma": self.config.sigma,
                 "beta": self.config.beta,
                 "gamma": self.config.gamma,
+                "margin_time_penalty": self.config.margin_time_penalty,
             },
         }
         if self._handicap_feature_names:
@@ -1183,6 +1237,7 @@ class WeightedTTT(RatingSystem):
         self._accum_days = []
         self._accum_weights = []
         self._accum_handicap_features = []
+        self._accum_margin_sq = []
         self._last_refit_day = None
         return super().reset()
 

@@ -57,6 +57,9 @@ from .eigenvector import EigenvectorCentrality, EigenvectorConfig
 from .weigenvector import WEigenvectorCentrality, WEigenvectorConfig
 from .gelo import GElo, GEloConfig
 from .wgelo import WGElo, WGEloConfig
+from .disc import Disc, DiscConfig
+from .wdisc import WDisc, WDiscConfig
+from .kickscore_rating import KickScoreRating, KickScoreConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -138,4 +141,13 @@ __all__ = [
     # Weighted G-Elo
     "WGElo",
     "WGEloConfig",
+    # Disc decomposition (skill + consistency)
+    "Disc",
+    "DiscConfig",
+    # Weighted Disc decomposition
+    "WDisc",
+    "WDiscConfig",
+    # KickScore (GP paired comparisons)
+    "KickScoreRating",
+    "KickScoreConfig",
 ]
