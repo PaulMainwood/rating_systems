@@ -101,7 +101,7 @@ class WWHRConfig:
     alpha_convergence_threshold: float = 0.01
     # Time-warp margin penalty (days): decisive wins stay at real time,
     # close wins are pushed into the past by up to this many days.
-    margin_time_penalty: float = 0.0
+    time_penalty_informative: float = 0.0
 
     def __post_init__(self):
         if self.refit_max_iterations is None:
@@ -154,7 +154,7 @@ class WeightedWHR(RatingSystem):
         use_jacobi: bool = True,
         max_alpha_iterations: int = 10,
         alpha_convergence_threshold: float = 0.01,
-        margin_time_penalty: float = 0.0,
+        time_penalty_informative: float = 0.0,
         num_players: Optional[int] = None,
     ):
         self.config = WWHRConfig(
@@ -171,7 +171,7 @@ class WeightedWHR(RatingSystem):
             use_jacobi=use_jacobi,
             max_alpha_iterations=max_alpha_iterations,
             alpha_convergence_threshold=alpha_convergence_threshold,
-            margin_time_penalty=margin_time_penalty,
+            time_penalty_informative=time_penalty_informative,
         )
 
         # w2 in log-gamma scale
@@ -211,7 +211,7 @@ class WeightedWHR(RatingSystem):
         self._stored_weights: Optional[np.ndarray] = None
         self._stored_handicap_features: Optional[np.ndarray] = None
         self._stored_handicaps: Optional[np.ndarray] = None
-        self._stored_margin_sq: Optional[np.ndarray] = None
+        self._stored_log_q: Optional[np.ndarray] = None
         self._last_refit_day: Optional[int] = None
 
         super().__init__(num_players=num_players)
@@ -662,7 +662,7 @@ class WeightedWHR(RatingSystem):
         handicap_features: Optional[np.ndarray] = None,
         handicap_feature_names: Optional[List[str]] = None,
         handicaps: Optional[np.ndarray] = None,
-        margin_sq: Optional[np.ndarray] = None,
+        log_q: Optional[np.ndarray] = None,
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "WeightedWHR":
@@ -679,10 +679,11 @@ class WeightedWHR(RatingSystem):
             handicap_feature_names: Optional names for each feature column.
             handicaps: Pre-computed per-game handicaps in log-gamma scale.
                 Mutually exclusive with handicap_features.
-            margin_sq: Per-game squared margin in [0, 1] for time-warp.
-                When margin_time_penalty > 0, games are shifted into the
-                past: effective_day = real_day - penalty * (1 - margin_sq).
-                Decisive wins stay at real time; close wins decay faster.
+            log_q: Per-game log informativeness score for time-warp.
+                When time_penalty_informative > 0, games are shifted:
+                effective_day = real_day + penalty * log_q.
+                Positive log_q (informative) pulls forward; negative pushes
+                into the past.
             end_day: Last day to include (inclusive)
             player_names: Optional mapping of player_id -> name
 
@@ -722,10 +723,10 @@ class WeightedWHR(RatingSystem):
             days[start:end] = day_indices[d]
 
         # Apply time-warp: shift close wins into the past
-        if margin_sq is not None and self.config.margin_time_penalty > 0:
+        if log_q is not None and self.config.time_penalty_informative != 0:
             days = np.round(
                 days.astype(np.float64)
-                - self.config.margin_time_penalty * (1.0 - margin_sq)
+                + self.config.time_penalty_informative * log_q
             ).astype(np.int32)
 
         # Default weights
@@ -756,8 +757,8 @@ class WeightedWHR(RatingSystem):
         self._stored_scores = scores.copy()
         self._stored_days = days.copy()
         self._stored_weights = weights.copy()
-        self._stored_margin_sq = (
-            margin_sq.copy() if margin_sq is not None else None
+        self._stored_log_q = (
+            log_q.copy() if log_q is not None else None
         )
         self._stored_handicap_features = (
             handicap_features.copy() if handicap_features is not None else None
@@ -787,7 +788,7 @@ class WeightedWHR(RatingSystem):
         weights: np.ndarray,
         handicaps: Optional[np.ndarray] = None,
         handicap_features: Optional[np.ndarray] = None,
-        margin_sq: Optional[np.ndarray] = None,
+        log_q: Optional[np.ndarray] = None,
     ) -> "WeightedWHR":
         """
         Update with new weighted games by refitting on all data.
@@ -801,7 +802,7 @@ class WeightedWHR(RatingSystem):
             handicap_features: Raw feature matrix (n_batch, n_features)
                 for the new games. Must have same number of columns as
                 the features used in fit().
-            margin_sq: Per-game squared margin in [0, 1] for time-warp.
+            log_q: Per-game log informativeness score for time-warp.
         """
         if not self._fitted:
             raise ValueError("Model must be fitted before updating")
@@ -809,10 +810,10 @@ class WeightedWHR(RatingSystem):
         n = len(batch)
 
         # Compute effective days with time-warp
-        if margin_sq is not None and self.config.margin_time_penalty > 0:
+        if log_q is not None and self.config.time_penalty_informative != 0:
             effective_days = np.round(
                 float(batch.day)
-                - self.config.margin_time_penalty * (1.0 - margin_sq)
+                + self.config.time_penalty_informative * log_q
             ).astype(np.int32)
         else:
             effective_days = np.full(n, batch.day, dtype=np.int32)
@@ -834,22 +835,22 @@ class WeightedWHR(RatingSystem):
             )
             self._stored_weights = np.concatenate([self._stored_weights, weights])
 
-        # Store margin_sq for potential future refitting
-        if margin_sq is not None:
-            if self._stored_margin_sq is not None:
-                self._stored_margin_sq = np.concatenate(
-                    [self._stored_margin_sq, margin_sq]
+        # Store log_q for potential future refitting
+        if log_q is not None:
+            if self._stored_log_q is not None:
+                self._stored_log_q = np.concatenate(
+                    [self._stored_log_q, log_q]
                 )
             else:
-                # fit() had no margin_sq — pad zeros for prior games
+                # fit() had no log_q — pad zeros for prior games
                 n_prev = len(self._stored_player1) - n
-                self._stored_margin_sq = np.concatenate([
+                self._stored_log_q = np.concatenate([
                     np.zeros(n_prev, dtype=np.float64),
-                    margin_sq,
+                    log_q,
                 ])
-        elif self._stored_margin_sq is not None:
-            self._stored_margin_sq = np.concatenate([
-                self._stored_margin_sq,
+        elif self._stored_log_q is not None:
+            self._stored_log_q = np.concatenate([
+                self._stored_log_q,
                 np.zeros(n, dtype=np.float64),
             ])
 
@@ -1136,8 +1137,8 @@ class WeightedWHR(RatingSystem):
             arrays["stored_handicap_features"] = self._stored_handicap_features
         if self._stored_handicaps is not None:
             arrays["stored_handicaps"] = self._stored_handicaps
-        if self._stored_margin_sq is not None:
-            arrays["stored_margin_sq"] = self._stored_margin_sq
+        if self._stored_log_q is not None:
+            arrays["stored_log_q"] = self._stored_log_q
 
         metadata = {
             "system_class": "WeightedWHR",
@@ -1149,7 +1150,7 @@ class WeightedWHR(RatingSystem):
                 "w2": self.config.w2,
                 "initial_rating": self.config.initial_rating,
                 "initial_rd": self.config.initial_rd,
-                "margin_time_penalty": self.config.margin_time_penalty,
+                "time_penalty_informative": self.config.time_penalty_informative,
             },
         }
         if self._handicap_feature_names:
@@ -1200,7 +1201,7 @@ class WeightedWHR(RatingSystem):
             self._stored_weights = arrays.get("stored_weights")
         self._stored_handicap_features = arrays.get("stored_handicap_features")
         self._stored_handicaps = arrays.get("stored_handicaps")
-        self._stored_margin_sq = arrays.get("stored_margin_sq")
+        self._stored_log_q = arrays.get("stored_log_q")
 
         # Cache last active day per player for time-aware predictions
         self._player_last_day = extract_player_last_day(
@@ -1229,7 +1230,7 @@ class WeightedWHR(RatingSystem):
         self._stored_weights = None
         self._stored_handicap_features = None
         self._stored_handicaps = None
-        self._stored_margin_sq = None
+        self._stored_log_q = None
         self._alpha = None
         self._handicap_features = None
         self._handicap_feature_names = None
