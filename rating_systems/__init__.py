@@ -136,6 +136,9 @@ from .systems import (
     # KickScore (GP paired comparisons)
     KickScoreRating,
     KickScoreConfig,
+    # Serve/Return
+    ServeReturnGlicko,
+    ServeReturnElo,
 )
 from .results import (
     FittedEloRatings,
