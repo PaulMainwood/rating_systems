@@ -60,7 +60,7 @@ from .wgelo import WGElo, WGEloConfig
 from .disc import Disc, DiscConfig
 from .wdisc import WDisc, WDiscConfig
 from .kickscore_rating import KickScoreRating, KickScoreConfig
-from .serve_return import ServeReturnGlicko, ServeReturnElo
+from .serve_return import ServeReturnGlicko, ServeReturnElo, ServeReturnGlickoPoints
 
 __all__ = [
     # Default (Numba) implementations

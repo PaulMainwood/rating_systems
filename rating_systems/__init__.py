@@ -139,6 +139,7 @@ from .systems import (
     # Serve/Return
     ServeReturnGlicko,
     ServeReturnElo,
+    ServeReturnGlickoPoints,
 )
 from .results import (
     FittedEloRatings,

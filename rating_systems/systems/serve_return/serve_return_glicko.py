@@ -46,6 +46,9 @@ class ServeReturnConfig:
     mu_clay: float = 0.0       # clay offset (negative = less serve advantage)
     mu_grass: float = 0.0      # grass offset (positive = more serve advantage)
     mu_indoor: float = 0.0     # indoor hard offset
+    # Separate RD scale for g() in predictions (decouples uncertainty
+    # shrinkage from the rating-to-probability conversion)
+    rd_scale: float = 0.0      # 0 = use main scale; >0 = separate scale for g()
 
 
 @njit(cache=True)
@@ -82,21 +85,30 @@ def _g_serve(rd_serve, rd_return, scale):
 
 
 @njit(cache=True)
+def _surface_mu(surf, mu, mu_clay, mu_grass, mu_indoor):
+    """Return surface-adjusted mu."""
+    if surf == 1:
+        return mu + mu_clay
+    elif surf == 2:
+        return mu + mu_grass
+    elif surf == 3:
+        return mu + mu_indoor
+    return mu
+
+
+@njit(cache=True)
 def _ratings_to_serve_pct(
     serve_ratings, serve_rd, return_ratings, return_rd,
     serve_last_played, return_last_played,
     p1_ids, p2_ids, surface_ids, day, c, max_rd,
-    mu, scale, mu_clay, mu_grass, mu_indoor,
+    mu, scale, mu_clay, mu_grass, mu_indoor, rd_scale,
 ):
     """Convert serve/return ratings to serve point win probabilities.
 
-    Uses: serve_pct = sigmoid(mu_eff + g(rd_s, rd_r) * (r_serve - r_return) / scale)
+    Uses: serve_pct = sigmoid(mu_eff + g(rd_s, rd_r, rd_scale) * (r_serve - r_return) / scale)
 
-    where mu_eff = mu + surface offset.
-
-    The g() factor shrinks the rating difference when either player's
-    serve or return rating is uncertain (high RD). This pulls predictions
-    toward the server-advantage baseline for unknown players.
+    where mu_eff = mu + surface offset, and rd_scale controls g() independently
+    of scale (0 = use main scale).
 
     Surface IDs: 0=hard, 1=clay, 2=grass, 3=indoor hard, -1=unknown.
     """
@@ -104,19 +116,14 @@ def _ratings_to_serve_pct(
     p_serve_1 = np.empty(n, dtype=np.float64)
     p_serve_2 = np.empty(n, dtype=np.float64)
 
+    # If rd_scale is 0 or negative, use the main scale for g()
+    g_scale = rd_scale if rd_scale > 0 else scale
+
     for i in range(n):
         p1 = p1_ids[i]
         p2 = p2_ids[i]
 
-        # Surface-conditional mu
-        surf = surface_ids[i]
-        mu_eff = mu
-        if surf == 1:
-            mu_eff += mu_clay
-        elif surf == 2:
-            mu_eff += mu_grass
-        elif surf == 3:
-            mu_eff += mu_indoor
+        mu_eff = _surface_mu(surface_ids[i], mu, mu_clay, mu_grass, mu_indoor)
 
         # P1 serving: P1's serve rating vs P2's return rating
         r_s1 = serve_ratings[p1]
@@ -133,8 +140,9 @@ def _ratings_to_serve_pct(
         rd_r1 = _grow_rd(return_rd[p1], return_last_played[p1], day, c, max_rd)
 
         # g() shrinks rating difference when uncertainty is high
-        g1 = _g_serve(rd_s1, rd_r2, scale)
-        g2 = _g_serve(rd_s2, rd_r1, scale)
+        # Uses rd_scale (separate from main scale) to decouple
+        g1 = _g_serve(rd_s1, rd_r2, g_scale)
+        g2 = _g_serve(rd_s2, rd_r1, g_scale)
 
         logit_1 = mu_eff + g1 * (r_s1 - r_r2) / scale
         logit_2 = mu_eff + g2 * (r_s2 - r_r1) / scale
@@ -190,6 +198,7 @@ class ServeReturnGlicko(RatingSystem):
         mu_clay: float = 0.0,
         mu_grass: float = 0.0,
         mu_indoor: float = 0.0,
+        rd_scale: float = 0.0,
         num_players: Optional[int] = None,
     ):
         self.config = ServeReturnConfig(
@@ -203,6 +212,7 @@ class ServeReturnGlicko(RatingSystem):
             mu_clay=mu_clay,
             mu_grass=mu_grass,
             mu_indoor=mu_indoor,
+            rd_scale=rd_scale,
         )
 
         self._serve_glicko = Glicko(
@@ -232,6 +242,39 @@ class ServeReturnGlicko(RatingSystem):
             metadata={"system": "serve_return_glicko"},
         )
 
+    def _surface_adjust(self, raw_pct: np.ndarray,
+                        surface_ids: Optional[np.ndarray]) -> np.ndarray:
+        """Adjust raw serve% by subtracting the surface mu offset.
+
+        This produces surface-neutral scores for the Glicko sub-systems,
+        so ratings reflect pure serve/return skill rather than being
+        contaminated by the surface a player typically plays on.
+
+        The adjustment is in probability space via the logit:
+          adjusted = sigmoid(logit(raw) - mu_surface)
+        """
+        if surface_ids is None:
+            return raw_pct
+        cfg = self.config
+        if cfg.mu_clay == 0.0 and cfg.mu_grass == 0.0 and cfg.mu_indoor == 0.0:
+            return raw_pct
+
+        adjusted = raw_pct.copy()
+        for i in range(len(raw_pct)):
+            surf = surface_ids[i]
+            offset = 0.0
+            if surf == 1:
+                offset = cfg.mu_clay
+            elif surf == 2:
+                offset = cfg.mu_grass
+            elif surf == 3:
+                offset = cfg.mu_indoor
+            if offset != 0.0:
+                p = max(1e-6, min(1.0 - 1e-6, raw_pct[i]))
+                logit_p = math.log(p / (1.0 - p))
+                adjusted[i] = 1.0 / (1.0 + math.exp(-(logit_p - offset)))
+        return np.clip(adjusted, 0.01, 0.99)
+
     def fit(
         self,
         dataset: GameDataset,
@@ -239,7 +282,11 @@ class ServeReturnGlicko(RatingSystem):
         end_day: Optional[int] = None,
         player_names: Optional[Dict[int, str]] = None,
     ) -> "ServeReturnGlicko":
-        """Fit on a dataset with serve statistics."""
+        """Fit on a dataset with serve statistics.
+
+        If serve_stats contains a 'surface_ids' key (int32 array),
+        scores are surface-adjusted before feeding to the Glicko sub-systems.
+        """
         if serve_stats is None:
             raise ValueError("serve_stats dict is required")
 
@@ -262,21 +309,27 @@ class ServeReturnGlicko(RatingSystem):
         p1_st = serve_stats["p1_serve_total"][:n_games]
         p2_sw = serve_stats["p2_serve_won"][:n_games]
         p2_st = serve_stats["p2_serve_total"][:n_games]
+        surface_ids = serve_stats.get("surface_ids")
 
         valid = (p1_st > 0) & (p2_st > 0) & np.isfinite(p1_sw) & np.isfinite(p2_sw)
 
-        serve_p1 = player1[valid]
-        serve_p2 = player2[valid]
         serve_scores = (p1_sw[valid] / p1_st[valid]).astype(np.float64)
-
-        return_p1 = player2[valid]
-        return_p2 = player1[valid]
         return_scores = (p2_sw[valid] / p2_st[valid]).astype(np.float64)
+
+        # Surface-adjust: remove surface effect so Glicko learns neutral ratings
+        valid_surfs = surface_ids[valid] if surface_ids is not None else None
+        serve_scores = self._surface_adjust(serve_scores, valid_surfs)
+        return_scores = self._surface_adjust(return_scores, valid_surfs)
 
         game_days = np.empty(n_games, dtype=np.int32)
         for d in range(len(day_indices)):
             game_days[day_offsets[d]:day_offsets[d + 1]] = day_indices[d]
         valid_days = game_days[valid]
+
+        serve_p1 = player1[valid]
+        serve_p2 = player2[valid]
+        return_p1 = player2[valid]
+        return_p2 = player1[valid]
 
         import polars as pl
         if len(serve_p1) > 0:
@@ -299,7 +352,10 @@ class ServeReturnGlicko(RatingSystem):
 
     def update(self, batch: GameBatch,
                serve_stats: Optional[dict] = None) -> "ServeReturnGlicko":
-        """Incrementally update with a new batch."""
+        """Incrementally update with a new batch.
+
+        If serve_stats contains 'surface_ids', scores are surface-adjusted.
+        """
         if serve_stats is None:
             return self
 
@@ -308,15 +364,23 @@ class ServeReturnGlicko(RatingSystem):
         p1_st = serve_stats["p1_serve_total"][:n]
         p2_sw = serve_stats["p2_serve_won"][:n]
         p2_st = serve_stats["p2_serve_total"][:n]
+        surface_ids = serve_stats.get("surface_ids")
 
         valid = (p1_st > 0) & (p2_st > 0) & np.isfinite(p1_sw) & np.isfinite(p2_sw)
         if not np.any(valid):
             return self
 
+        serve_scores = (p1_sw[valid] / p1_st[valid]).astype(np.float64)
+        return_scores = (p2_sw[valid] / p2_st[valid]).astype(np.float64)
+
+        valid_surfs = surface_ids[valid] if surface_ids is not None else None
+        serve_scores = self._surface_adjust(serve_scores, valid_surfs)
+        return_scores = self._surface_adjust(return_scores, valid_surfs)
+
         serve_batch = GameBatch(
             player1=batch.player1[valid],
             player2=batch.player2[valid],
-            scores=(p1_sw[valid] / p1_st[valid]).astype(np.float64),
+            scores=serve_scores,
             day=batch.day,
         )
         self._serve_glicko.update(serve_batch)
@@ -324,7 +388,7 @@ class ServeReturnGlicko(RatingSystem):
         return_batch = GameBatch(
             player1=batch.player2[valid],
             player2=batch.player1[valid],
-            scores=(p2_sw[valid] / p2_st[valid]).astype(np.float64),
+            scores=return_scores,
             day=batch.day,
         )
         self._return_glicko.update(return_batch)
@@ -369,6 +433,7 @@ class ServeReturnGlicko(RatingSystem):
             self.config.c, self.config.max_rd,
             self.config.mu, self.config.scale,
             self.config.mu_clay, self.config.mu_grass, self.config.mu_indoor,
+            self.config.rd_scale,
         )
 
         if isinstance(best_of, (int, np.integer)):
