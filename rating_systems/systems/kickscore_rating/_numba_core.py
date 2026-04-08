@@ -91,6 +91,8 @@ def _logsumexp2(xs, bs):
     s = 0.0
     for i in range(len(xs)):
         s += bs[i] * math.exp(xs[i] - a)
+    if s <= 1e-30:
+        s = 1e-30
     return a + math.log(s)
 
 
@@ -116,6 +118,8 @@ def mm_logit_win(mean_cav, cov_cav):
         w = math.exp(arr1[i]) * _CS[i]
         num_d += w * arr2[i] * _LAMBDAS[i]
         den_d += w
+    if abs(den_d) < 1e-30:
+        return 0.0, 0.0, 0.0
     dlogpart1 = num_d / den_d
 
     num_d2 = 0.0
@@ -248,6 +252,7 @@ def kalman_forward_backward(
         P_f[i] = Z @ P_p[i] @ Z.T + xs[i] * np.outer(k, k)
 
     # Backward pass (RTS smoother)
+    jitter = np.eye(3) * 1e-10  # regularisation for numerical stability
     for i in range(n - 1, -1, -1):
         if i == n - 1:
             m_s[i] = m_f[i].copy()
@@ -257,7 +262,7 @@ def kalman_forward_backward(
             A = compute_transition(dt, lambda_)
             # G = (A @ P_f[i])' @ P_p[i+1]^{-1}
             # Solve P_p[i+1] @ G' = A @ P_f[i]
-            G = np.linalg.solve(P_p[i + 1], A @ P_f[i]).T
+            G = np.linalg.solve(P_p[i + 1] + jitter, A @ P_f[i]).T
             m_s[i] = m_f[i] + G @ (m_s[i + 1] - m_p[i + 1])
             P_s[i] = P_f[i] + G @ (P_s[i + 1] - P_p[i + 1]) @ G.T
 
@@ -305,7 +310,8 @@ def predict_at_time(t, ts, m_f, P_f, m_s, P_s, m_p_arr, P_p_arr,
     # RTS correction using right neighbour
     dt2 = ts[idx] - t
     A2 = compute_transition(dt2, lambda_)
-    G = np.linalg.solve(P_p_arr[idx], A2 @ P).T
+    jitter = np.eye(3) * 1e-10
+    G = np.linalg.solve(P_p_arr[idx] + jitter, A2 @ P).T
     m_pred = m + G @ (m_s[idx] - m_p_arr[idx])
     P_pred = P + G @ (P_s[idx] - P_p_arr[idx]) @ G.T
 
@@ -333,6 +339,10 @@ def ep_update_match(
     v1 = p1_vs[p1_idx]
     m2 = p2_ms[p2_idx]
     v2 = p2_vs[p2_idx]
+
+    # Guard against zero/negative variance (numerical collapse)
+    if v1 <= 1e-12 or v2 <= 1e-12:
+        return 0.0
 
     # Cavity for player 1's contribution
     x1_tot = 1.0 / v1

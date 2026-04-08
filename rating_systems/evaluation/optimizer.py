@@ -1066,6 +1066,67 @@ def optimize_disc(
     )
 
 
+def optimize_kickscore(
+    dataset: GameDataset,
+    var_constant_bounds: Tuple[float, float] = (0.01, 0.5),
+    var_matern_bounds: Tuple[float, float] = (0.01, 1.0),
+    lscale_bounds: Tuple[float, float] = (30, 2000),
+    maxiter: int = 20,
+    max_test_days: Optional[int] = None,
+    train_ratio: float = 0.7,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    fixed_params: Optional[Dict[str, Any]] = None,
+    x0: Optional[np.ndarray] = None,
+    **kwargs,
+) -> OptimizationResult:
+    """Optimize KickScore (GP paired comparisons) parameters.
+
+    Args:
+        dataset: Game dataset
+        var_constant_bounds: Bounds for baseline skill variance
+        var_matern_bounds: Bounds for form-variation variance
+        lscale_bounds: Bounds for temporal lengthscale (days)
+        maxiter: Maximum optimization iterations
+        max_test_days: Limit test period
+        train_ratio: Fraction of days for initial training
+        method: Optimization method
+        verbose: Whether to print progress
+        fixed_params: Parameters held fixed during optimization
+
+    Returns:
+        OptimizationResult
+    """
+    from ..systems.kickscore_rating import KickScoreRating
+
+    fp = fixed_params or {}
+    fp.setdefault("max_iter", 30)
+    fp.setdefault("refit_max_iterations", 1)
+    fp.setdefault("tol", 1e-3)
+    fp.setdefault("ep_lr", 1.0)
+
+    optimizer = RatingSystemOptimizer(
+        KickScoreRating,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params=fp,
+        max_test_days=max_test_days,
+    )
+
+    return optimizer.optimize(
+        param_bounds={
+            "var_constant": var_constant_bounds,
+            "var_matern": var_matern_bounds,
+            "lscale": lscale_bounds,
+        },
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
+        **kwargs,
+    )
+
+
 def optimize_all(
     dataset: GameDataset,
     systems: Optional[List[str]] = None,

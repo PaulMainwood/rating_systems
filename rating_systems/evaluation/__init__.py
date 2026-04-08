@@ -17,6 +17,7 @@ from .optimizer import (
     optimize_eigenvector,
     optimize_gelo,
     optimize_disc,
+    optimize_kickscore,
     optimize_all,
 )
 
@@ -45,5 +46,6 @@ __all__ = [
     "optimize_eigenvector",
     "optimize_gelo",
     "optimize_disc",
+    "optimize_kickscore",
     "optimize_all",
 ]

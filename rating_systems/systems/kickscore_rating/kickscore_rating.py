@@ -38,7 +38,8 @@ class KickScoreConfig:
     var_constant: float = 0.05   # baseline skill variance
     var_matern: float = 0.15     # form-variation variance
     lscale: float = 365.0        # lengthscale in days
-    max_iter: int = 30           # EP iterations
+    max_iter: int = 30           # EP iterations for initial fit
+    refit_max_iterations: int = 1  # EP iterations for warm-started updates
     tol: float = 1e-3            # EP convergence tolerance
     ep_lr: float = 1.0           # EP damping (1.0 = no damping)
 
@@ -55,6 +56,7 @@ class KickScoreRating(RatingSystem):
         lscale: float = 365.0,
         obs_type: str = "logit",
         max_iter: int = 30,
+        refit_max_iterations: int = 1,
         tol: float = 1e-3,
         ep_lr: float = 1.0,
         num_players: Optional[int] = None,
@@ -64,6 +66,7 @@ class KickScoreRating(RatingSystem):
             var_matern=var_matern,
             lscale=lscale,
             max_iter=max_iter,
+            refit_max_iterations=refit_max_iterations,
             tol=tol,
             ep_lr=ep_lr,
         )
@@ -198,7 +201,11 @@ class KickScoreRating(RatingSystem):
         self._current_day = self._last_day
 
     def update(self, batch: GameBatch):
-        """Incremental update: add new matches and re-run EP (warm-started)."""
+        """Incremental update: add new matches and re-run EP (warm-started).
+
+        Uses refit_max_iterations (fewer EP iters) since the posterior is
+        already warm-started from the previous fit/update.
+        """
         day = float(batch.day) if hasattr(batch, 'day') and batch.day is not None else float(self._last_day + 1)
         for i in range(len(batch.player1)):
             self._add_match(
@@ -208,7 +215,15 @@ class KickScoreRating(RatingSystem):
         self._last_day = int(day)
         self._num_games_fitted += len(batch.player1)
 
-        self._run_ep()
+        # Use fewer iterations for warm-started updates
+        refit_iters = getattr(self.config, 'refit_max_iterations', None)
+        if refit_iters is not None:
+            saved = self.config.max_iter
+            self.config.max_iter = refit_iters
+            self._run_ep()
+            self.config.max_iter = saved
+        else:
+            self._run_ep()
 
         # Extend ratings if needed
         if self._players:
