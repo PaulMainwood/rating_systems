@@ -1174,9 +1174,14 @@ def optimize_genelo_surface(
     sigma_clay_bounds: Tuple[float, float] = (30, 200),
     sigma_grass_bounds: Tuple[float, float] = (30, 200),
     sigma_indoor_bounds: Tuple[float, float] = (30, 200),
+    rho_hard_clay_bounds: Tuple[float, float] = (0.1, 0.99),
+    rho_hard_grass_bounds: Tuple[float, float] = (0.1, 0.99),
+    rho_hard_indoor_bounds: Tuple[float, float] = (0.1, 0.99),
+    rho_clay_grass_bounds: Tuple[float, float] = (0.1, 0.99),
+    rho_clay_indoor_bounds: Tuple[float, float] = (0.1, 0.99),
+    rho_grass_indoor_bounds: Tuple[float, float] = (0.1, 0.99),
     initial_rating: float = 1500.0,
     scale: float = 400.0,
-    surface_correlations: Optional[Dict] = None,
     tournament_sigmas: Optional[Tuple[float, ...]] = None,
     bo5_factor: float = 0.432,
     maxiter: int = 30,
@@ -1188,12 +1193,12 @@ def optimize_genelo_surface(
     **kwargs,
 ) -> OptimizationResult:
     """
-    Optimise GenEloSurface surface sigmas via custom walk-forward backtest.
+    Optimise GenEloSurface surface sigmas and correlations.
 
     Uses a custom walk-forward loop because the standard Backtester does not
     pass surface/tournament/bo5 arrays to fit()/update()/predict_proba().
 
-    Optimises the 4 surface sigmas; correlations and other params are fixed.
+    Optimises 10 parameters: 4 surface sigmas + 6 pairwise correlations.
 
     Args:
         dataset: Game dataset.
@@ -1204,9 +1209,14 @@ def optimize_genelo_surface(
         sigma_clay_bounds: Bounds for clay court sigma.
         sigma_grass_bounds: Bounds for grass court sigma.
         sigma_indoor_bounds: Bounds for indoor hard sigma.
+        rho_hard_clay_bounds: Bounds for hard-clay correlation.
+        rho_hard_grass_bounds: Bounds for hard-grass correlation.
+        rho_hard_indoor_bounds: Bounds for hard-indoor correlation.
+        rho_clay_grass_bounds: Bounds for clay-grass correlation.
+        rho_clay_indoor_bounds: Bounds for clay-indoor correlation.
+        rho_grass_indoor_bounds: Bounds for grass-indoor correlation.
         initial_rating: Fixed initial rating.
         scale: Fixed Elo scale.
-        surface_correlations: Fixed correlation dict. None uses paper defaults.
         tournament_sigmas: Fixed tournament sigmas. None uses paper defaults.
         bo5_factor: Fixed bo5 format multiplier.
         maxiter: Maximum optimisation iterations.
@@ -1214,10 +1224,10 @@ def optimize_genelo_surface(
         max_test_days: Limit test period to this many days.
         method: Optimisation method.
         verbose: Whether to print progress.
-        x0: Initial parameter guess.
+        x0: Initial parameter guess (10 values: 4 sigmas + 6 correlations).
 
     Returns:
-        OptimizationResult with best surface sigmas.
+        OptimizationResult with best surface sigmas and correlations.
     """
     from ..systems.genelo import GenEloSurface
     from .metrics import brier_score as _brier, log_loss as _ll, accuracy as _acc
@@ -1245,8 +1255,6 @@ def optimize_genelo_surface(
 
     # Build game-index offsets per day for slicing extra arrays
     p1, p2, scores, day_indices, day_offsets = dataset.get_batched_arrays()
-    # Map each game to its cumulative index for slicing surfaces etc.
-    # day_offsets[i] gives the start index of day i in the batched arrays.
 
     # Precompute train dataset
     train_dataset = dataset.filter_days(end_day=train_end_day)
@@ -1260,24 +1268,26 @@ def optimize_genelo_surface(
         test_days = [d for d in test_days if d <= test_end_day]
 
     # Build fixed config kwargs
-    # Disable margin params (c1=None) since we don't have continuous margin data
     fixed_kw = dict(
         initial_rating=initial_rating,
         scale=scale,
         bo5_factor=bo5_factor,
-        c1=None,
-        c2=None,
-        sigma_obs=None,
-        sigma_obs_bo5=None,
+        c1=None, c2=None, sigma_obs=None, sigma_obs_bo5=None,
     )
-    if surface_correlations is not None:
-        fixed_kw["surface_correlations"] = surface_correlations
     if tournament_sigmas is not None:
         fixed_kw["tournament_sigmas"] = tournament_sigmas
 
-    # Tracking
-    param_names = ["sigma_hard", "sigma_clay", "sigma_grass", "sigma_indoor"]
-    bounds = [sigma_hard_bounds, sigma_clay_bounds, sigma_grass_bounds, sigma_indoor_bounds]
+    # Tracking — 4 sigmas + 6 correlations = 10 params
+    param_names = [
+        "sigma_hard", "sigma_clay", "sigma_grass", "sigma_indoor",
+        "rho_hard_clay", "rho_hard_grass", "rho_hard_indoor",
+        "rho_clay_grass", "rho_clay_indoor", "rho_grass_indoor",
+    ]
+    bounds = [
+        sigma_hard_bounds, sigma_clay_bounds, sigma_grass_bounds, sigma_indoor_bounds,
+        rho_hard_clay_bounds, rho_hard_grass_bounds, rho_hard_indoor_bounds,
+        rho_clay_grass_bounds, rho_clay_indoor_bounds, rho_grass_indoor_bounds,
+    ]
     eval_count = 0
     best_ll = float("inf")
     best_params = {}
@@ -1291,10 +1301,17 @@ def optimize_genelo_surface(
 
         # Clamp to bounds
         x = np.clip(x, [b[0] for b in bounds], [b[1] for b in bounds])
-        s_hard, s_clay, s_grass, s_indoor = x
+        s_hard, s_clay, s_grass, s_indoor = x[:4]
+        rho_hc, rho_hg, rho_hi, rho_cg, rho_ci, rho_gi = x[4:]
+
+        corr_dict = {
+            (0, 1): rho_hc, (0, 2): rho_hg, (0, 3): rho_hi,
+            (1, 2): rho_cg, (1, 3): rho_ci, (2, 3): rho_gi,
+        }
 
         system = GenEloSurface(
             surface_sigmas=(s_hard, s_clay, s_grass, s_indoor),
+            surface_correlations=corr_dict,
             **fixed_kw,
         )
         system.fit(
