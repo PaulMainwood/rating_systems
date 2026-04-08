@@ -61,6 +61,7 @@ from .disc import Disc, DiscConfig
 from .wdisc import WDisc, WDiscConfig
 from .kickscore_rating import KickScoreRating, KickScoreConfig
 from .serve_return import ServeReturnGlicko, ServeReturnElo, ServeReturnGlickoPoints
+from .genelo import GenElo, GenEloConfig, GenEloSurface, GenEloSurfaceConfig
 
 __all__ = [
     # Default (Numba) implementations
@@ -151,4 +152,9 @@ __all__ = [
     # KickScore (GP paired comparisons)
     "KickScoreRating",
     "KickScoreConfig",
+    # GenElo (Bayesian Elo, Ingram 2021)
+    "GenElo",
+    "GenEloConfig",
+    "GenEloSurface",
+    "GenEloSurfaceConfig",
 ]

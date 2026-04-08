@@ -140,6 +140,11 @@ from .systems import (
     ServeReturnGlicko,
     ServeReturnElo,
     ServeReturnGlickoPoints,
+    # GenElo (Bayesian Elo, Ingram 2021)
+    GenElo,
+    GenEloConfig,
+    GenEloSurface,
+    GenEloSurfaceConfig,
 )
 from .results import (
     FittedEloRatings,
@@ -232,6 +237,11 @@ __all__ = [
     "WDiscConfig",
     "KickScoreRating",
     "KickScoreConfig",
+    # GenElo (Bayesian Elo, Ingram 2021)
+    "GenElo",
+    "GenEloConfig",
+    "GenEloSurface",
+    "GenEloSurfaceConfig",
     # Fitted ratings (queryable results)
     "FittedEloRatings",
     "FittedGlickoRatings",

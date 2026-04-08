@@ -1025,6 +1025,44 @@ def optimize_gelo(
     )
 
 
+def optimize_genelo(
+    dataset: GameDataset,
+    sigma_bounds: Tuple[float, float] = (30, 200),
+    initial_rating: float = 1500.0,
+    scale: float = 400.0,
+    maxiter: int = 30,
+    train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
+    **kwargs,
+) -> OptimizationResult:
+    """Optimise GenElo sigma (Bayesian k-factor); scale and initial_rating fixed."""
+    from ..systems.genelo import GenElo
+
+    optimizer = RatingSystemOptimizer(
+        GenElo,
+        dataset,
+        train_ratio=train_ratio,
+        fixed_params={
+            "initial_rating": initial_rating,
+            "scale": scale,
+            "use_taylor_k": True,
+        },
+        max_test_days=max_test_days,
+    )
+
+    return optimizer.optimize(
+        param_bounds={"sigma": sigma_bounds},
+        method=method,
+        maxiter=maxiter,
+        verbose=verbose,
+        x0=x0,
+        **kwargs,
+    )
+
+
 def optimize_disc(
     dataset: GameDataset,
     k_bounds: Tuple[float, float] = (4, 100),
