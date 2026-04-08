@@ -1165,6 +1165,269 @@ def optimize_kickscore(
     )
 
 
+def optimize_genelo_surface(
+    dataset: GameDataset,
+    surfaces: np.ndarray,
+    tournament_levels: Optional[np.ndarray] = None,
+    is_bo5: Optional[np.ndarray] = None,
+    sigma_hard_bounds: Tuple[float, float] = (30, 200),
+    sigma_clay_bounds: Tuple[float, float] = (30, 200),
+    sigma_grass_bounds: Tuple[float, float] = (30, 200),
+    sigma_indoor_bounds: Tuple[float, float] = (30, 200),
+    initial_rating: float = 1500.0,
+    scale: float = 400.0,
+    surface_correlations: Optional[Dict] = None,
+    tournament_sigmas: Optional[Tuple[float, ...]] = None,
+    bo5_factor: float = 0.432,
+    maxiter: int = 30,
+    train_ratio: float = 0.7,
+    max_test_days: Optional[int] = None,
+    method: str = "differential_evolution",
+    verbose: bool = True,
+    x0: Optional[np.ndarray] = None,
+    **kwargs,
+) -> OptimizationResult:
+    """
+    Optimise GenEloSurface surface sigmas via custom walk-forward backtest.
+
+    Uses a custom walk-forward loop because the standard Backtester does not
+    pass surface/tournament/bo5 arrays to fit()/update()/predict_proba().
+
+    Optimises the 4 surface sigmas; correlations and other params are fixed.
+
+    Args:
+        dataset: Game dataset.
+        surfaces: Surface ID per game (0=hard, 1=clay, 2=grass, 3=indoor_hard).
+        tournament_levels: Tournament level per game (0=250/500, 1=Masters, 2=Slam).
+        is_bo5: Best-of-5 indicator per game (0 or 1).
+        sigma_hard_bounds: Bounds for hard court sigma.
+        sigma_clay_bounds: Bounds for clay court sigma.
+        sigma_grass_bounds: Bounds for grass court sigma.
+        sigma_indoor_bounds: Bounds for indoor hard sigma.
+        initial_rating: Fixed initial rating.
+        scale: Fixed Elo scale.
+        surface_correlations: Fixed correlation dict. None uses paper defaults.
+        tournament_sigmas: Fixed tournament sigmas. None uses paper defaults.
+        bo5_factor: Fixed bo5 format multiplier.
+        maxiter: Maximum optimisation iterations.
+        train_ratio: Fraction of days for initial training.
+        max_test_days: Limit test period to this many days.
+        method: Optimisation method.
+        verbose: Whether to print progress.
+        x0: Initial parameter guess.
+
+    Returns:
+        OptimizationResult with best surface sigmas.
+    """
+    from ..systems.genelo import GenEloSurface
+    from .metrics import brier_score as _brier, log_loss as _ll, accuracy as _acc
+
+    surfaces = np.ascontiguousarray(surfaces, dtype=np.int64)
+    n_games = dataset.num_games
+    if tournament_levels is None:
+        tournament_levels = np.zeros(n_games, dtype=np.int64)
+    else:
+        tournament_levels = np.ascontiguousarray(tournament_levels, dtype=np.int64)
+    if is_bo5 is None:
+        is_bo5 = np.zeros(n_games, dtype=np.int64)
+    else:
+        is_bo5 = np.ascontiguousarray(is_bo5, dtype=np.int64)
+
+    # Compute train/test split
+    days = dataset.days
+    split_idx = int(len(days) * train_ratio)
+    train_end_day = days[split_idx - 1] if split_idx > 0 else days[0]
+    test_end_day = None
+    if max_test_days is not None:
+        test_days_list = [d for d in days if d > train_end_day]
+        if len(test_days_list) > max_test_days:
+            test_end_day = test_days_list[max_test_days - 1]
+
+    # Build game-index offsets per day for slicing extra arrays
+    p1, p2, scores, day_indices, day_offsets = dataset.get_batched_arrays()
+    # Map each game to its cumulative index for slicing surfaces etc.
+    # day_offsets[i] gives the start index of day i in the batched arrays.
+
+    # Precompute train dataset
+    train_dataset = dataset.filter_days(end_day=train_end_day)
+    n_train = train_dataset.num_games
+    train_surfaces = surfaces[:n_train]
+    train_tourn = tournament_levels[:n_train]
+    train_bo5 = is_bo5[:n_train]
+
+    test_days = [d for d in days if d > train_end_day]
+    if test_end_day is not None:
+        test_days = [d for d in test_days if d <= test_end_day]
+
+    # Build fixed config kwargs
+    # Disable margin params (c1=None) since we don't have continuous margin data
+    fixed_kw = dict(
+        initial_rating=initial_rating,
+        scale=scale,
+        bo5_factor=bo5_factor,
+        c1=None,
+        c2=None,
+        sigma_obs=None,
+        sigma_obs_bo5=None,
+    )
+    if surface_correlations is not None:
+        fixed_kw["surface_correlations"] = surface_correlations
+    if tournament_sigmas is not None:
+        fixed_kw["tournament_sigmas"] = tournament_sigmas
+
+    # Tracking
+    param_names = ["sigma_hard", "sigma_clay", "sigma_grass", "sigma_indoor"]
+    bounds = [sigma_hard_bounds, sigma_clay_bounds, sigma_grass_bounds, sigma_indoor_bounds]
+    eval_count = 0
+    best_ll = float("inf")
+    best_params = {}
+    best_brier = 1.0
+    best_acc = 0.0
+    history = []
+    start_time = time.time()
+
+    def objective(x):
+        nonlocal eval_count, best_ll, best_params, best_brier, best_acc
+
+        # Clamp to bounds
+        x = np.clip(x, [b[0] for b in bounds], [b[1] for b in bounds])
+        s_hard, s_clay, s_grass, s_indoor = x
+
+        system = GenEloSurface(
+            surface_sigmas=(s_hard, s_clay, s_grass, s_indoor),
+            **fixed_kw,
+        )
+        system.fit(
+            train_dataset,
+            surfaces=train_surfaces,
+            tournament_levels=train_tourn,
+            is_bo5=train_bo5,
+        )
+
+        # Walk-forward
+        all_preds = []
+        all_acts = []
+        game_idx = n_train  # running index into the full arrays
+
+        for day in test_days:
+            try:
+                batch = dataset.get_day(day)
+            except ValueError:
+                continue
+
+            n_day = len(batch)
+            day_surf = surfaces[game_idx:game_idx + n_day]
+            day_tourn = tournament_levels[game_idx:game_idx + n_day]
+            day_bo5 = is_bo5[game_idx:game_idx + n_day]
+
+            # Predict with per-match covariates
+            preds = system.predict_proba_with_covariates(
+                batch.player1, batch.player2,
+                day_surf, day_tourn, day_bo5,
+            )
+            all_preds.append(preds)
+            all_acts.append(batch.scores)
+
+            # Update
+            system.update(
+                batch,
+                surfaces=day_surf,
+                tournament_levels=day_tourn,
+                is_bo5=day_bo5,
+            )
+            game_idx += n_day
+
+        if not all_preds:
+            return 10.0
+
+        preds = np.concatenate(all_preds)
+        acts = np.concatenate(all_acts)
+        ll = _ll(preds, acts)
+        brier = _brier(preds, acts)
+        acc = _acc(preds, acts)
+
+        eval_count += 1
+        is_best = ll < best_ll
+        if is_best:
+            best_ll = ll
+            best_params = dict(zip(param_names, x))
+            best_brier = brier
+            best_acc = acc
+
+        entry = {
+            "eval": eval_count,
+            "params": dict(zip(param_names, x)),
+            "brier": brier,
+            "log_loss": ll,
+            "accuracy": acc,
+            "time": time.time() - start_time,
+        }
+        history.append(entry)
+
+        if verbose:
+            elapsed = time.time() - start_time
+            p_str = ", ".join(f"{k}={v:.2f}" for k, v in zip(param_names, x))
+            marker = " *BEST*" if is_best else ""
+            print(
+                f"  [{eval_count:3d}] LogLoss={ll:.6f} Brier={brier:.6f} "
+                f"Acc={acc:.4f} | {p_str} ({elapsed:.1f}s){marker}"
+            )
+
+        return ll
+
+    if verbose:
+        n_test = len(test_days)
+        print(f"\n{'='*60}")
+        print(f"Optimizing GenEloSurface")
+        print(f"{'='*60}")
+        print(f"Method: {method}")
+        print(f"Parameters: {param_names}")
+        print(f"Bounds: {bounds}")
+        print(f"Max iterations: {maxiter}")
+        print(f"Train/test split at day: {train_end_day}")
+        print(f"Fixed params: scale={scale}, bo5_factor={bo5_factor}")
+        print(f"Dataset: {n_games:,} games, {dataset.num_players:,} players")
+        print(f"{'='*60}\n")
+
+    if method == "differential_evolution":
+        de_kw = dict(
+            bounds=bounds,
+            maxiter=maxiter,
+            seed=42,
+            tol=0.0001,
+            polish=True,
+            disp=verbose,
+        )
+        if x0 is not None:
+            de_kw["x0"] = x0
+        de_kw.update(kwargs)
+        result = differential_evolution(objective, **de_kw)
+    else:
+        if x0 is None:
+            x0 = np.array([(lo + hi) / 2 for lo, hi in bounds])
+        result = minimize(
+            objective, x0, method=method, bounds=bounds,
+            options={"maxiter": maxiter, "disp": verbose},
+        )
+
+    opt_result = OptimizationResult(
+        system_class="GenEloSurface",
+        best_params=best_params,
+        best_brier=best_brier,
+        best_log_loss=best_ll,
+        best_accuracy=best_acc,
+        n_evaluations=eval_count,
+        total_time=time.time() - start_time,
+        history=history,
+        fixed_params=fixed_kw,
+    )
+
+    if verbose:
+        print(opt_result.summary())
+
+    return opt_result
+
+
 def optimize_all(
     dataset: GameDataset,
     systems: Optional[List[str]] = None,

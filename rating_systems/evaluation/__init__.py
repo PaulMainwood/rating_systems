@@ -19,6 +19,7 @@ from .optimizer import (
     optimize_disc,
     optimize_kickscore,
     optimize_genelo,
+    optimize_genelo_surface,
     optimize_all,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "optimize_disc",
     "optimize_kickscore",
     "optimize_genelo",
+    "optimize_genelo_surface",
     "optimize_all",
 ]

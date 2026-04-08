@@ -168,10 +168,10 @@ class GenEloSurface(RatingSystem):
         surface_sigmas: Tuple[float, ...] = (82.2, 90.6, 95.5, 86.5),
         surface_correlations: Optional[Dict[Tuple[int, int], float]] = None,
         tournament_sigmas: Tuple[float, ...] = (0.0, 23.7),
-        c1: Optional[float] = 0.000144,
-        c2: Optional[float] = 0.0998,
-        sigma_obs: Optional[float] = 0.087,
-        sigma_obs_bo5: Optional[float] = 0.071,
+        c1: Optional[float] = None,
+        c2: Optional[float] = None,
+        sigma_obs: Optional[float] = None,
+        sigma_obs_bo5: Optional[float] = None,
         bo5_factor: float = 0.432,
         num_players: Optional[int] = None,
     ):
@@ -235,6 +235,14 @@ class GenEloSurface(RatingSystem):
             skills[:, NUM_SURFACES + t] = 0.0
         return skills
 
+    def reset(self) -> "GenEloSurface":
+        """Reset ratings (including multi-dimensional skills) to initial state."""
+        super().reset()
+        if self._num_players is not None:
+            self._skill_ratings = self._initialize_skill_ratings(self._num_players)
+        self._num_games_fitted = 0
+        return self
+
     def _sync_overall_ratings(self) -> None:
         """Update the scalar ratings array from skill ratings.
 
@@ -245,10 +253,76 @@ class GenEloSurface(RatingSystem):
             self._ratings.ratings[:] = self._skill_ratings[:, SURFACE_HARD]
 
     def _update_ratings(self, batch: GameBatch, ratings: PlayerRatings) -> None:
-        """Not used directly — use fit() instead."""
+        """Not used directly — use update() with surface kwargs instead."""
         raise NotImplementedError(
-            "GenEloSurface requires surface data. Use fit() with surfaces parameter."
+            "GenEloSurface requires surface data. Use update() with surfaces kwarg."
         )
+
+    def update(
+        self,
+        batch: GameBatch,
+        surfaces: Optional[np.ndarray] = None,
+        tournament_levels: Optional[np.ndarray] = None,
+        is_bo5: Optional[np.ndarray] = None,
+        margins: Optional[np.ndarray] = None,
+    ) -> "GenEloSurface":
+        """
+        Incrementally update ratings with a new batch of games.
+
+        Args:
+            batch: New games to process.
+            surfaces: Surface ID per game (0=hard, 1=clay, 2=grass, 3=indoor_hard).
+                Defaults to SURFACE_HARD if not provided.
+            tournament_levels: Tournament level per game. Defaults to 0.
+            is_bo5: Best-of-5 indicator per game. Defaults to 0.
+            margins: Continuous margin per game. Ignored if model has no margin params.
+
+        Returns:
+            self (for method chaining).
+        """
+        if not self._fitted:
+            raise ValueError("Model must be fitted before updating. Call fit() first.")
+
+        n = len(batch)
+
+        if surfaces is None:
+            surfaces = np.zeros(n, dtype=np.int64)
+        else:
+            surfaces = np.ascontiguousarray(surfaces, dtype=np.int64)
+
+        if tournament_levels is None:
+            tournament_levels = np.zeros(n, dtype=np.int64)
+        else:
+            tournament_levels = np.ascontiguousarray(tournament_levels, dtype=np.int64)
+
+        if is_bo5 is None:
+            is_bo5 = np.zeros(n, dtype=np.int64)
+        else:
+            is_bo5 = np.ascontiguousarray(is_bo5, dtype=np.int64)
+
+        if margins is None:
+            margins = np.zeros(n, dtype=np.float64)
+        else:
+            margins = np.ascontiguousarray(margins, dtype=np.float64)
+
+        # Single-day offset: [0, n]
+        day_offsets = np.array([0, n], dtype=np.int64)
+
+        fit_all_days_surface(
+            np.ascontiguousarray(batch.player1, dtype=np.int64),
+            np.ascontiguousarray(batch.player2, dtype=np.int64),
+            np.ascontiguousarray(batch.scores, dtype=np.float64),
+            margins, surfaces, tournament_levels, is_bo5,
+            day_offsets, self._skill_ratings, self._cov_matrix,
+            self._b, self._c1, self._c2,
+            self._sigma_obs_sq, self._sigma_obs_bo5_sq,
+            self.config.bo5_factor, self._use_margin,
+        )
+
+        self._sync_overall_ratings()
+        self._num_games_fitted += n
+        self._current_day = batch.day
+        return self
 
     def fit(
         self,
