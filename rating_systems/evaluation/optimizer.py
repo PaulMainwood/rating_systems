@@ -1170,6 +1170,7 @@ def optimize_genelo_surface(
     surfaces: np.ndarray,
     tournament_levels: Optional[np.ndarray] = None,
     is_bo5: Optional[np.ndarray] = None,
+    margins: Optional[np.ndarray] = None,
     sigma_hard_bounds: Tuple[float, float] = (30, 200),
     sigma_clay_bounds: Tuple[float, float] = (30, 200),
     sigma_grass_bounds: Tuple[float, float] = (30, 200),
@@ -1180,6 +1181,10 @@ def optimize_genelo_surface(
     rho_clay_grass_bounds: Tuple[float, float] = (0.1, 0.99),
     rho_clay_indoor_bounds: Tuple[float, float] = (0.1, 0.99),
     rho_grass_indoor_bounds: Tuple[float, float] = (0.1, 0.99),
+    c1_bounds: Optional[Tuple[float, float]] = None,
+    c2_bounds: Optional[Tuple[float, float]] = None,
+    sigma_obs_bounds: Optional[Tuple[float, float]] = None,
+    sigma_obs_bo5_bounds: Optional[Tuple[float, float]] = None,
     initial_rating: float = 1500.0,
     scale: float = 400.0,
     tournament_sigmas: Optional[Tuple[float, ...]] = None,
@@ -1193,41 +1198,37 @@ def optimize_genelo_surface(
     **kwargs,
 ) -> OptimizationResult:
     """
-    Optimise GenEloSurface surface sigmas and correlations.
+    Optimise GenEloSurface parameters via custom walk-forward backtest.
 
-    Uses a custom walk-forward loop because the standard Backtester does not
-    pass surface/tournament/bo5 arrays to fit()/update()/predict_proba().
-
-    Optimises 10 parameters: 4 surface sigmas + 6 pairwise correlations.
+    Always optimises 10 structural parameters (4 sigmas + 6 correlations).
+    When margins are provided and margin bounds are set, also optimises
+    up to 4 margin parameters (c1, c2, sigma_obs, sigma_obs_bo5).
 
     Args:
         dataset: Game dataset.
         surfaces: Surface ID per game (0=hard, 1=clay, 2=grass, 3=indoor_hard).
-        tournament_levels: Tournament level per game (0=250/500, 1=Masters, 2=Slam).
-        is_bo5: Best-of-5 indicator per game (0 or 1).
-        sigma_hard_bounds: Bounds for hard court sigma.
-        sigma_clay_bounds: Bounds for clay court sigma.
-        sigma_grass_bounds: Bounds for grass court sigma.
-        sigma_indoor_bounds: Bounds for indoor hard sigma.
-        rho_hard_clay_bounds: Bounds for hard-clay correlation.
-        rho_hard_grass_bounds: Bounds for hard-grass correlation.
-        rho_hard_indoor_bounds: Bounds for hard-indoor correlation.
-        rho_clay_grass_bounds: Bounds for clay-grass correlation.
-        rho_clay_indoor_bounds: Bounds for clay-indoor correlation.
-        rho_grass_indoor_bounds: Bounds for grass-indoor correlation.
+        tournament_levels: Tournament level per game.
+        is_bo5: Best-of-5 indicator per game.
+        margins: Margin per game (MARGIN_MISSING sentinel for missing). If None,
+            margins are disabled regardless of bounds.
+        sigma_hard_bounds..rho_grass_indoor_bounds: Bounds for structural params.
+        c1_bounds: Bounds for margin slope. If set (with margins), c1 is optimised.
+        c2_bounds: Bounds for margin offset. If set (with margins), c2 is optimised.
+        sigma_obs_bounds: Bounds for bo3 margin noise. If set, optimised.
+        sigma_obs_bo5_bounds: Bounds for bo5 margin noise. If set, optimised.
         initial_rating: Fixed initial rating.
         scale: Fixed Elo scale.
-        tournament_sigmas: Fixed tournament sigmas. None uses paper defaults.
+        tournament_sigmas: Fixed tournament sigmas.
         bo5_factor: Fixed bo5 format multiplier.
         maxiter: Maximum optimisation iterations.
         train_ratio: Fraction of days for initial training.
-        max_test_days: Limit test period to this many days.
+        max_test_days: Limit test period.
         method: Optimisation method.
         verbose: Whether to print progress.
-        x0: Initial parameter guess (10 values: 4 sigmas + 6 correlations).
+        x0: Initial parameter guess.
 
     Returns:
-        OptimizationResult with best surface sigmas and correlations.
+        OptimizationResult with best parameters.
     """
     from ..systems.genelo import GenEloSurface
     from .metrics import brier_score as _brier, log_loss as _ll, accuracy as _acc
@@ -1242,6 +1243,15 @@ def optimize_genelo_surface(
         is_bo5 = np.zeros(n_games, dtype=np.int64)
     else:
         is_bo5 = np.ascontiguousarray(is_bo5, dtype=np.int64)
+    if margins is not None:
+        margins = np.ascontiguousarray(margins, dtype=np.float64)
+
+    # Determine which margin params to optimise
+    use_margins = margins is not None
+    opt_c1 = use_margins and c1_bounds is not None
+    opt_c2 = use_margins and c2_bounds is not None
+    opt_sobs = use_margins and sigma_obs_bounds is not None
+    opt_sobs5 = use_margins and sigma_obs_bo5_bounds is not None
 
     # Compute train/test split
     days = dataset.days
@@ -1253,15 +1263,14 @@ def optimize_genelo_surface(
         if len(test_days_list) > max_test_days:
             test_end_day = test_days_list[max_test_days - 1]
 
-    # Build game-index offsets per day for slicing extra arrays
     p1, p2, scores, day_indices, day_offsets = dataset.get_batched_arrays()
 
-    # Precompute train dataset
     train_dataset = dataset.filter_days(end_day=train_end_day)
     n_train = train_dataset.num_games
     train_surfaces = surfaces[:n_train]
     train_tourn = tournament_levels[:n_train]
     train_bo5 = is_bo5[:n_train]
+    train_margins = margins[:n_train] if use_margins else None
 
     test_days = [d for d in days if d > train_end_day]
     if test_end_day is not None:
@@ -1272,12 +1281,11 @@ def optimize_genelo_surface(
         initial_rating=initial_rating,
         scale=scale,
         bo5_factor=bo5_factor,
-        c1=None, c2=None, sigma_obs=None, sigma_obs_bo5=None,
     )
     if tournament_sigmas is not None:
         fixed_kw["tournament_sigmas"] = tournament_sigmas
 
-    # Tracking — 4 sigmas + 6 correlations = 10 params
+    # Build param names and bounds — structural (always) + margin (optional)
     param_names = [
         "sigma_hard", "sigma_clay", "sigma_grass", "sigma_indoor",
         "rho_hard_clay", "rho_hard_grass", "rho_hard_indoor",
@@ -1288,6 +1296,16 @@ def optimize_genelo_surface(
         rho_hard_clay_bounds, rho_hard_grass_bounds, rho_hard_indoor_bounds,
         rho_clay_grass_bounds, rho_clay_indoor_bounds, rho_grass_indoor_bounds,
     ]
+    if opt_c1:
+        param_names.append("c1"); bounds.append(c1_bounds)
+    if opt_c2:
+        param_names.append("c2"); bounds.append(c2_bounds)
+    if opt_sobs:
+        param_names.append("sigma_obs"); bounds.append(sigma_obs_bounds)
+    if opt_sobs5:
+        param_names.append("sigma_obs_bo5"); bounds.append(sigma_obs_bo5_bounds)
+
+    n_structural = 10
     eval_count = 0
     best_ll = float("inf")
     best_params = {}
@@ -1299,32 +1317,53 @@ def optimize_genelo_surface(
     def objective(x):
         nonlocal eval_count, best_ll, best_params, best_brier, best_acc
 
-        # Clamp to bounds
         x = np.clip(x, [b[0] for b in bounds], [b[1] for b in bounds])
         s_hard, s_clay, s_grass, s_indoor = x[:4]
-        rho_hc, rho_hg, rho_hi, rho_cg, rho_ci, rho_gi = x[4:]
+        rho_hc, rho_hg, rho_hi, rho_cg, rho_ci, rho_gi = x[4:10]
 
         corr_dict = {
             (0, 1): rho_hc, (0, 2): rho_hg, (0, 3): rho_hi,
             (1, 2): rho_cg, (1, 3): rho_ci, (2, 3): rho_gi,
         }
 
+        # Extract margin params from x (after the 10 structural params)
+        margin_kw = {}
+        idx = n_structural
+        if opt_c1:
+            margin_kw["c1"] = float(x[idx]); idx += 1
+        if opt_c2:
+            margin_kw["c2"] = float(x[idx]); idx += 1
+        if opt_sobs:
+            margin_kw["sigma_obs"] = float(x[idx]); idx += 1
+        if opt_sobs5:
+            margin_kw["sigma_obs_bo5"] = float(x[idx]); idx += 1
+
+        # If optimising some margin params, fill in defaults for the rest
+        if margin_kw:
+            margin_kw.setdefault("c1", 0.000144)
+            margin_kw.setdefault("c2", 0.0998)
+            margin_kw.setdefault("sigma_obs", 0.087)
+            margin_kw.setdefault("sigma_obs_bo5", 0.071)
+        else:
+            margin_kw = dict(c1=None, c2=None, sigma_obs=None, sigma_obs_bo5=None)
+
         system = GenEloSurface(
             surface_sigmas=(s_hard, s_clay, s_grass, s_indoor),
             surface_correlations=corr_dict,
-            **fixed_kw,
+            **fixed_kw, **margin_kw,
         )
         system.fit(
             train_dataset,
             surfaces=train_surfaces,
             tournament_levels=train_tourn,
             is_bo5=train_bo5,
+            margins=train_margins,
         )
 
         # Walk-forward
         all_preds = []
         all_acts = []
-        game_idx = n_train  # running index into the full arrays
+        game_idx = n_train
 
         for day in test_days:
             try:
@@ -1337,7 +1376,6 @@ def optimize_genelo_surface(
             day_tourn = tournament_levels[game_idx:game_idx + n_day]
             day_bo5 = is_bo5[game_idx:game_idx + n_day]
 
-            # Predict with per-match covariates
             preds = system.predict_proba_with_covariates(
                 batch.player1, batch.player2,
                 day_surf, day_tourn, day_bo5,
@@ -1345,13 +1383,11 @@ def optimize_genelo_surface(
             all_preds.append(preds)
             all_acts.append(batch.scores)
 
-            # Update
-            system.update(
-                batch,
-                surfaces=day_surf,
-                tournament_levels=day_tourn,
-                is_bo5=day_bo5,
-            )
+            update_kw = dict(surfaces=day_surf, tournament_levels=day_tourn,
+                             is_bo5=day_bo5)
+            if use_margins:
+                update_kw["margins"] = margins[game_idx:game_idx + n_day]
+            system.update(batch, **update_kw)
             game_idx += n_day
 
         if not all_preds:
@@ -1383,7 +1419,9 @@ def optimize_genelo_surface(
 
         if verbose:
             elapsed = time.time() - start_time
-            p_str = ", ".join(f"{k}={v:.2f}" for k, v in zip(param_names, x))
+            p_str = ", ".join(f"{k}={v:.4f}" if "c1" in k or "sigma_obs" in k
+                              else f"{k}={v:.2f}"
+                              for k, v in zip(param_names, x))
             marker = " *BEST*" if is_best else ""
             print(
                 f"  [{eval_count:3d}] LogLoss={ll:.6f} Brier={brier:.6f} "
@@ -1393,16 +1431,22 @@ def optimize_genelo_surface(
         return ll
 
     if verbose:
+        n_params = len(param_names)
         n_test = len(test_days)
         print(f"\n{'='*60}")
-        print(f"Optimizing GenEloSurface")
+        print(f"Optimizing GenEloSurface ({n_params} params)")
         print(f"{'='*60}")
         print(f"Method: {method}")
         print(f"Parameters: {param_names}")
-        print(f"Bounds: {bounds}")
         print(f"Max iterations: {maxiter}")
         print(f"Train/test split at day: {train_end_day}")
         print(f"Fixed params: scale={scale}, bo5_factor={bo5_factor}")
+        if use_margins:
+            from ..systems.genelo import MARGIN_MISSING
+            n_valid = int(np.sum(margins < MARGIN_MISSING))
+            print(f"Margins: {n_valid}/{n_games} valid ({n_valid/n_games*100:.0f}%)")
+        else:
+            print(f"Margins: disabled")
         print(f"Dataset: {n_games:,} games, {dataset.num_players:,} players")
         print(f"{'='*60}\n")
 
