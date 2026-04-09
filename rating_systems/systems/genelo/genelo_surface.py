@@ -358,8 +358,9 @@ class GenEloSurface(RatingSystem):
         if end_day is not None:
             dataset = dataset.filter_days(end_day=end_day)
 
-        if self._num_players is None or self._num_players < dataset.num_players:
-            self._num_players = dataset.num_players
+        if (self._num_players is None or self._num_players < dataset.num_players
+                or self._skill_ratings is None):
+            self._num_players = max(self._num_players or 0, dataset.num_players)
             self._ratings = self._initialize_ratings(self._num_players)
             self._skill_ratings = self._initialize_skill_ratings(self._num_players)
 

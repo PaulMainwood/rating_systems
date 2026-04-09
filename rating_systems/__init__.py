@@ -145,6 +145,7 @@ from .systems import (
     GenEloConfig,
     GenEloSurface,
     GenEloSurfaceConfig,
+    MARGIN_MISSING,
 )
 from .results import (
     FittedEloRatings,

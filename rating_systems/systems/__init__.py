@@ -61,7 +61,7 @@ from .disc import Disc, DiscConfig
 from .wdisc import WDisc, WDiscConfig
 from .kickscore_rating import KickScoreRating, KickScoreConfig
 from .serve_return import ServeReturnGlicko, ServeReturnElo, ServeReturnGlickoPoints
-from .genelo import GenElo, GenEloConfig, GenEloSurface, GenEloSurfaceConfig
+from .genelo import GenElo, GenEloConfig, GenEloSurface, GenEloSurfaceConfig, MARGIN_MISSING
 
 __all__ = [
     # Default (Numba) implementations

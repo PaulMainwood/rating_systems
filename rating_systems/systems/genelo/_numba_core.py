@@ -17,6 +17,9 @@ Prediction uses the approximate marginal likelihood (Eq. 33):
 import numpy as np
 from numba import njit, prange
 
+# Sentinel value for missing margins (fastmath=True breaks np.isnan)
+MARGIN_MISSING = 1e30
+
 
 @njit(cache=True, fastmath=True, inline="always")
 def _sigmoid(x: float) -> float:
@@ -157,25 +160,30 @@ def fit_all_days_genelo_margin(
             gamma = _sigmoid(b * delta_mu)
             eta = gamma * (1.0 - gamma)
 
-            # Shared k denominator (Eq. 27)
-            denom = inv_sigma_delta_sq + b_sq * eta + c1_sq / sigma_obs_sq
-            k_shared = 0.5 / denom
+            # MARGIN_MISSING sentinel → win-only update (skip margin component)
+            if margin >= MARGIN_MISSING:
+                k = (b / 2.0) / (inv_sigma_delta_sq + b_sq * eta)
+                update = 2.0 * k * (score - gamma)
+            else:
+                # Shared k denominator (Eq. 27)
+                denom = inv_sigma_delta_sq + b_sq * eta + c1_sq / sigma_obs_sq
+                k_shared = 0.5 / denom
 
-            # Win component (Eq. 26)
-            k_win = b * k_shared
-            win_residual = score - gamma
+                # Win component (Eq. 26)
+                k_win = b * k_shared
+                win_residual = score - gamma
 
-            # Margin component (Eq. 26)
-            # s_pred: expected margin from P1's perspective
-            # If P1 won (score=1): s_pred = c1*delta_mu + c2
-            # If P2 won (score=0): s_pred = c1*delta_mu - c2
-            # Combined: s_pred = c1*delta_mu + c2*(2*score - 1)
-            s_pred = c1 * delta_mu + c2 * (2.0 * score - 1.0)
-            k_margin = c1_over_sigma_obs_sq * k_shared
-            margin_residual = margin - s_pred
+                # Margin component (Eq. 26)
+                # s_pred: expected margin from P1's perspective
+                # If P1 won (score=1): s_pred = c1*delta_mu + c2
+                # If P2 won (score=0): s_pred = c1*delta_mu - c2
+                # Combined: s_pred = c1*delta_mu + c2*(2*score - 1)
+                s_pred = c1 * delta_mu + c2 * (2.0 * score - 1.0)
+                k_margin = c1_over_sigma_obs_sq * k_shared
+                margin_residual = margin - s_pred
 
-            # Combined update for each player
-            update = 2.0 * k_win * win_residual + 2.0 * k_margin * margin_residual
+                # Combined update for each player
+                update = 2.0 * k_win * win_residual + 2.0 * k_margin * margin_residual
             ratings[p1] = r1 + update / 2.0
             ratings[p2] = r2 - update / 2.0
 
@@ -289,11 +297,12 @@ def log_marginal_likelihood_scalar(
             # Log-likelihood of the margin (Eq. 33, second term)
             if use_margin:
                 margin = margins[i]
-                s_pred = c1 * delta_mu + c2 * (2.0 * score - 1.0)
-                var_margin = sigma_obs_sq + c1 * c1 * sigma_delta_sq
-                ll_margin = -0.5 * np.log(2.0 * np.pi * var_margin) - \
-                    0.5 * (margin - s_pred) ** 2 / var_margin
-                total_ll += ll_margin
+                if margin < MARGIN_MISSING:
+                    s_pred = c1 * delta_mu + c2 * (2.0 * score - 1.0)
+                    var_margin = sigma_obs_sq + c1 * c1 * sigma_delta_sq
+                    ll_margin = -0.5 * np.log(2.0 * np.pi * var_margin) - \
+                        0.5 * (margin - s_pred) ** 2 / var_margin
+                    total_ll += ll_margin
 
             n_matches += 1
 
@@ -301,7 +310,7 @@ def log_marginal_likelihood_scalar(
             gamma = _sigmoid(b * delta_mu)
             eta = gamma * (1.0 - gamma)
 
-            if use_margin:
+            if use_margin and margins[i] < MARGIN_MISSING:
                 c1_sq = c1 * c1
                 denom = inv_sigma_delta_sq + b_sq * eta + c1_sq / sigma_obs_sq
                 k_shared = 0.5 / denom

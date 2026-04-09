@@ -49,6 +49,9 @@ TOURNAMENT_MASTERS = 1
 TOURNAMENT_SLAM = 2
 NUM_TOURNAMENT_ADDITIONS = 2  # Masters and Slam (250/500 is baseline)
 
+# Sentinel value for missing margins (fastmath=True breaks np.isnan)
+MARGIN_MISSING = 1e30
+
 
 @njit(cache=True, fastmath=True, inline="always")
 def _compute_sigma_a(
@@ -208,9 +211,12 @@ def fit_all_days_surface(
 
             if use_margin:
                 margin = margins[i]
-                alpha += c1_sq / obs_var
-                s_pred = c1 * delta_mu + c2 * (2.0 * score - 1.0)
-                beta += (c1 / obs_var) * (margin - s_pred)
+                # MARGIN_MISSING sentinel → skip margin component (win-only update)
+                # (np.isnan is unreliable under fastmath=True)
+                if margin < MARGIN_MISSING:
+                    alpha += c1_sq / obs_var
+                    s_pred = c1 * delta_mu + c2 * (2.0 * score - 1.0)
+                    beta += (c1 / obs_var) * (margin - s_pred)
 
             # Update factor: β / (1 + α q)
             factor = beta / (1.0 + alpha * q)

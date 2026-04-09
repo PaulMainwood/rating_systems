@@ -26,6 +26,7 @@ from ._numba_surface import (
     TOURNAMENT_250_500,
     TOURNAMENT_MASTERS,
     TOURNAMENT_SLAM,
+    MARGIN_MISSING,
 )
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "TOURNAMENT_MASTERS",
     "TOURNAMENT_SLAM",
     "TOURNAMENT_NAMES",
+    "MARGIN_MISSING",
 ]
