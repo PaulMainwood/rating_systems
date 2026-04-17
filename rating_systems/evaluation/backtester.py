@@ -40,10 +40,17 @@ class BacktestResult:
     test_days: int
     total_games: int
 
-    # Aggregate metrics (weighted by number of games per day)
+    # Aggregate metrics — unweighted unless sample_weights was passed.
     brier: float
     log_loss: float
     accuracy: float
+
+    # Unweighted copies — populated only when sample_weights was provided,
+    # otherwise identical to the primary metrics above. Useful for side-by-side
+    # reporting of "metric on all matches" vs "metric on the weighted subset".
+    brier_all: Optional[float] = None
+    log_loss_all: Optional[float] = None
+    accuracy_all: Optional[float] = None
 
     # Per-day results
     daily_results: List[DayResult] = field(default_factory=list)
@@ -96,6 +103,7 @@ class Backtester:
         test_start_day: Optional[int] = None,
         test_end_day: Optional[int] = None,
         verbose: bool = True,
+        sample_weights: Optional[np.ndarray] = None,
     ) -> BacktestResult:
         """
         Run backtest.
@@ -106,11 +114,22 @@ class Backtester:
             test_start_day: First day of testing. If None, uses train_end_day + 1.
             test_end_day: Last day of testing (inclusive). If None, uses last day.
             verbose: Whether to print progress.
+            sample_weights: Optional (num_games,) per-game weights aligned to
+                the full dataset. Only the test-portion slices are used, for
+                computing weighted metrics. Training is unaffected.
 
         Returns:
             BacktestResult with aggregate and per-day metrics
         """
         days = self.dataset.days
+
+        if sample_weights is not None:
+            sample_weights = np.asarray(sample_weights, dtype=np.float64)
+            if len(sample_weights) != self.dataset.num_games:
+                raise ValueError(
+                    f"sample_weights length {len(sample_weights)} != "
+                    f"dataset.num_games {self.dataset.num_games}"
+                )
 
         # Determine train/test split
         if train_end_day is None:
@@ -143,6 +162,7 @@ class Backtester:
         daily_results: List[DayResult] = []
         all_predictions: List[np.ndarray] = []
         all_actuals: List[np.ndarray] = []
+        all_weights: List[np.ndarray] = []
 
         if verbose:
             print(f"Testing on {len(test_days)} days [{test_start_day} to {test_end_day}]...")
@@ -156,10 +176,15 @@ class Backtester:
             # Predict before updating
             predictions = self.system.predict_proba(batch.player1, batch.player2, day=day)
 
-            # Calculate metrics
-            day_brier = brier_score(predictions, batch.scores)
-            day_log_loss = log_loss(predictions, batch.scores)
-            day_accuracy = accuracy(predictions, batch.scores)
+            # Slice per-day weights from the full-dataset array
+            day_w = None
+            if sample_weights is not None:
+                start, end = self.dataset.get_day_range(day)
+                day_w = sample_weights[start:end]
+
+            day_brier = brier_score(predictions, batch.scores, sample_weight=day_w)
+            day_log_loss = log_loss(predictions, batch.scores, sample_weight=day_w)
+            day_accuracy = accuracy(predictions, batch.scores, sample_weight=day_w)
 
             daily_results.append(DayResult(
                 day=day,
@@ -171,6 +196,8 @@ class Backtester:
 
             all_predictions.append(predictions)
             all_actuals.append(batch.scores)
+            if sample_weights is not None:
+                all_weights.append(day_w)
 
             # Update model with this day's results
             self.system.update(batch)
@@ -179,8 +206,9 @@ class Backtester:
                 # Calculate running metrics
                 running_preds = np.concatenate(all_predictions)
                 running_acts = np.concatenate(all_actuals)
-                running_brier = brier_score(running_preds, running_acts)
-                running_ll = log_loss(running_preds, running_acts)
+                running_w = np.concatenate(all_weights) if all_weights else None
+                running_brier = brier_score(running_preds, running_acts, sample_weight=running_w)
+                running_ll = log_loss(running_preds, running_acts, sample_weight=running_w)
                 running_games = len(running_preds)
                 print(
                     f"  Day {i + 1}/{len(test_days)} | "
@@ -192,11 +220,18 @@ class Backtester:
         # Calculate aggregate metrics
         all_preds = np.concatenate(all_predictions)
         all_acts = np.concatenate(all_actuals)
+        all_w = np.concatenate(all_weights) if all_weights else None
 
         total_games = len(all_preds)
-        agg_brier = brier_score(all_preds, all_acts)
-        agg_log_loss = log_loss(all_preds, all_acts)
-        agg_accuracy = accuracy(all_preds, all_acts)
+        agg_brier = brier_score(all_preds, all_acts, sample_weight=all_w)
+        agg_log_loss = log_loss(all_preds, all_acts, sample_weight=all_w)
+        agg_accuracy = accuracy(all_preds, all_acts, sample_weight=all_w)
+
+        # Unweighted aggregates (same arrays, no weights). When
+        # sample_weights was None these equal the primary metrics.
+        unw_brier = brier_score(all_preds, all_acts)
+        unw_log_loss = log_loss(all_preds, all_acts)
+        unw_accuracy = accuracy(all_preds, all_acts)
 
         result = BacktestResult(
             system_name=self.system.__class__.__name__,
@@ -206,6 +241,9 @@ class Backtester:
             brier=agg_brier,
             log_loss=agg_log_loss,
             accuracy=agg_accuracy,
+            brier_all=unw_brier,
+            log_loss_all=unw_log_loss,
+            accuracy_all=unw_accuracy,
             daily_results=daily_results,
         )
 
@@ -220,6 +258,7 @@ def compare_systems(
     dataset: GameDataset,
     train_end_day: Optional[int] = None,
     verbose: bool = True,
+    sample_weights: Optional[np.ndarray] = None,
 ) -> pl.DataFrame:
     """
     Compare multiple rating systems on the same dataset.
@@ -229,6 +268,8 @@ def compare_systems(
         dataset: Game dataset
         train_end_day: Last day of initial training
         verbose: Whether to print progress
+        sample_weights: Optional (num_games,) per-game weights for weighted
+            scoring — see :meth:`Backtester.run`.
 
     Returns:
         DataFrame with comparison results
@@ -242,7 +283,11 @@ def compare_systems(
             print('='*50)
 
         backtester = Backtester(system, dataset)
-        result = backtester.run(train_end_day=train_end_day, verbose=verbose)
+        result = backtester.run(
+            train_end_day=train_end_day,
+            verbose=verbose,
+            sample_weights=sample_weights,
+        )
 
         results.append({
             "system": result.system_name,

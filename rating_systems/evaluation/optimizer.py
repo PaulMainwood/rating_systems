@@ -110,6 +110,10 @@ class RatingSystemOptimizer:
         self._verbose = False
         self._param_names: List[str] = []
         self._bounds: Optional[List[Tuple[float, float]]] = None
+        # Per-match scoring weights (set by .optimize(sample_weights=...)).
+        # When set, Backtester uses them for weighted metrics; we still
+        # rank candidates by the weighted log loss.
+        self.sample_weights: Optional[np.ndarray] = None
 
     def _objective(self, x: np.ndarray) -> float:
         """
@@ -139,6 +143,7 @@ class RatingSystemOptimizer:
                 train_end_day=self.train_end_day,
                 test_end_day=self.test_end_day,
                 verbose=False,
+                sample_weights=self.sample_weights,
             )
 
             brier = result.brier
@@ -190,6 +195,7 @@ class RatingSystemOptimizer:
         verbose: bool = True,
         x0: Optional[np.ndarray] = None,
         ftol: Optional[float] = None,
+        sample_weights: Optional[np.ndarray] = None,
         **kwargs,
     ) -> OptimizationResult:
         """
@@ -206,6 +212,9 @@ class RatingSystemOptimizer:
             verbose: Whether to print progress
             x0: Initial parameter values for local methods. If None, uses
                 midpoint of bounds. Ignored for differential_evolution.
+            sample_weights: Optional per-game scoring weights, full-dataset
+                aligned (length = dataset.num_games). Used to compute the
+                weighted log loss objective. Training is unaffected.
             **kwargs: Additional arguments passed to optimizer
 
         Returns:
@@ -217,6 +226,7 @@ class RatingSystemOptimizer:
         self._best_log_loss = float('inf')
         self._best_params = {}
         self._start_time = time.time()
+        self.sample_weights = sample_weights
 
         self._param_names = list(param_bounds.keys())
         bounds = [param_bounds[name] for name in self._param_names]

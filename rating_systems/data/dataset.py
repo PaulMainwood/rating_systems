@@ -254,6 +254,21 @@ class GameDataset:
             day=day,
         )
 
+    def get_day_range(self, day: int) -> Tuple[int, int]:
+        """Return the (start, end) game-index range for a day.
+
+        Lets callers slice parallel per-game arrays (e.g. sample weights)
+        using the same offsets as :meth:`get_day`.
+        """
+        if self._day_indices is None:
+            raise ValueError("No data loaded")
+
+        idx = np.searchsorted(self._day_indices, day)
+        if idx >= len(self._day_indices) or self._day_indices[idx] != day:
+            raise ValueError(f"No games found for day {day}")
+
+        return int(self._day_offsets[idx]), int(self._day_offsets[idx + 1])
+
     def get_batched_arrays(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Get all data as pre-batched arrays for direct Numba processing.
