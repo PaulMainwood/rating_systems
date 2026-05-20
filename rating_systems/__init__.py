@@ -146,6 +146,9 @@ from .systems import (
     GenEloSurface,
     GenEloSurfaceConfig,
     MARGIN_MISSING,
+    # Surface-Factor Weighted Glicko (TrueSkill 2 cross-surface model)
+    WSurfaceFactorGlicko,
+    SurfaceFactorGlickoConfig,
 )
 from .results import (
     FittedEloRatings,
