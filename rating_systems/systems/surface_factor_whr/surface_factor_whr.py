@@ -342,6 +342,28 @@ class SurfaceFactorWHR(RatingSystem):
         )
         return self
 
+    def update_weighted(
+        self,
+        batch: GameBatch,
+        weights: np.ndarray,
+        surfaces: Optional[np.ndarray] = None,
+    ) -> "SurfaceFactorWHR":
+        """Walk-forward-compatible signature: ``update_weighted(batch, weights, surfaces)``.
+
+        Mirrors the call site in
+        ``tennis_ratings/prediction/walk_forward.py:walk_forward_weights_only``
+        which calls ``system.update_weighted(batch, day_w)`` for batch systems
+        and threads ``surfaces`` for surface-aware ones. The argument order
+        (weights, surfaces) matches the existing weighted Glicko/WHR systems.
+        """
+        if surfaces is None:
+            raise ValueError(
+                "SurfaceFactorWHR.update_weighted requires `surfaces`; "
+                "the walk-forward dispatch should pass them when "
+                "spec.requires_surfaces is True."
+            )
+        return self.update(batch, surfaces=surfaces, weights=weights)
+
     def update(
         self,
         batch: GameBatch,
@@ -399,8 +421,19 @@ class SurfaceFactorWHR(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
-        surfaces: Union[int, np.ndarray, List[int]],
+        surfaces: Union[int, np.ndarray, List[int]] = None,
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
+        # ``day`` is accepted (but unused) so the unified walk-forward
+        # ``predict_one_day`` dispatch can call ``predict_proba(..., day=cur_day)``
+        # without exception. A future enhancement may add a per-(player, day)
+        # damped sigmoid analogous to plain WHR's prediction-at-day path.
+        del day
+        if surfaces is None:
+            raise ValueError(
+                "SurfaceFactorWHR.predict_proba requires `surfaces`; pass via "
+                "`surfaces=...` (the walk-forward dispatch threads it through)."
+            )
         if self._base_rating is None:
             raise ValueError("Model not fitted. Call fit() first.")
 
