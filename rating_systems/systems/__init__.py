@@ -63,6 +63,11 @@ from .kickscore_rating import KickScoreRating, KickScoreConfig
 from .serve_return import ServeReturnGlicko, ServeReturnElo, ServeReturnGlickoPoints
 from .genelo import GenElo, GenEloConfig, GenEloSurface, GenEloSurfaceConfig, MARGIN_MISSING
 from .surface_factor_glicko import WSurfaceFactorGlicko, SurfaceFactorGlickoConfig
+from .surface_factor_whr import (
+    SurfaceFactorWHR,
+    SurfaceFactorWHRConfig,
+    WSurfaceFactorWHR,
+)
 
 __all__ = [
     # Default (Numba) implementations
@@ -161,4 +166,8 @@ __all__ = [
     # Surface-Factor Weighted Glicko (TrueSkill 2 cross-surface model)
     "WSurfaceFactorGlicko",
     "SurfaceFactorGlickoConfig",
+    # Surface-Factor WHR (batch joint MAP via coordinate descent)
+    "SurfaceFactorWHR",
+    "SurfaceFactorWHRConfig",
+    "WSurfaceFactorWHR",
 ]

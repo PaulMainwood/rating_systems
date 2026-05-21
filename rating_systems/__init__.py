@@ -149,6 +149,10 @@ from .systems import (
     # Surface-Factor Weighted Glicko (TrueSkill 2 cross-surface model)
     WSurfaceFactorGlicko,
     SurfaceFactorGlickoConfig,
+    # Surface-Factor WHR (batch joint MAP via coordinate descent)
+    SurfaceFactorWHR,
+    SurfaceFactorWHRConfig,
+    WSurfaceFactorWHR,
 )
 from .results import (
     FittedEloRatings,
