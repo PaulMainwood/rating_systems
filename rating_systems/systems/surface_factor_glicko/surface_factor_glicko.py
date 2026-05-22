@@ -221,6 +221,55 @@ class WSurfaceFactorGlicko(RatingSystem):
 
     def update_weighted(
         self,
+        *args,
+        **kwargs,
+    ) -> "WSurfaceFactorGlicko":
+        """Apply a single rating-period update for the given games.
+
+        Two calling conventions:
+
+        1. **Standard W* signature** (used by walk-forward dispatch):
+           ``update_weighted(batch, weights, surfaces=...)`` where ``batch``
+           is a :class:`GameBatch`. Mirrors the call site in
+           ``tennis_ratings/prediction/walk_forward.py:walk_forward_weights_only``.
+
+        2. **Raw-arrays signature** (legacy / direct user):
+           ``update_weighted(player1, player2, scores, surfaces, day, weights=None)``.
+
+        The wrapper auto-detects which form was used.
+        """
+        if not self._fitted:
+            raise ValueError("Model must be fitted before update_weighted(). Call fit() first.")
+        # Detect form 1 (GameBatch) vs form 2 (raw arrays) by sniffing the
+        # first positional. A GameBatch has player1/player2/scores/day attrs.
+        if args and hasattr(args[0], "player1") and hasattr(args[0], "day"):
+            batch = args[0]
+            weights = args[1] if len(args) > 1 else kwargs.get("weights")
+            surfaces = kwargs.get("surfaces") if len(args) <= 2 else args[2]
+            if surfaces is None:
+                raise ValueError(
+                    "WSurfaceFactorGlicko.update_weighted requires `surfaces`; "
+                    "the walk-forward dispatch should pass them when "
+                    "spec.requires_surfaces is True."
+                )
+            return self._update_weighted_arrays(
+                batch.player1, batch.player2, batch.scores,
+                surfaces, batch.day, weights,
+            )
+        # Form 2 — raw arrays. Allow surfaces to be positional or kwarg.
+        if len(args) >= 5:
+            return self._update_weighted_arrays(
+                args[0], args[1], args[2], args[3], args[4],
+                args[5] if len(args) > 5 else kwargs.get("weights"),
+            )
+        # Fall back to kwargs for explicit form-2 invocation.
+        return self._update_weighted_arrays(
+            kwargs["player1"], kwargs["player2"], kwargs["scores"],
+            kwargs["surfaces"], kwargs["day"], kwargs.get("weights"),
+        )
+
+    def _update_weighted_arrays(
+        self,
         player1: np.ndarray,
         player2: np.ndarray,
         scores: np.ndarray,
@@ -228,9 +277,6 @@ class WSurfaceFactorGlicko(RatingSystem):
         day: int,
         weights: Optional[np.ndarray] = None,
     ) -> "WSurfaceFactorGlicko":
-        """Apply a single rating-period update for the given games."""
-        if not self._fitted:
-            raise ValueError("Model must be fitted before update_weighted(). Call fit() first.")
         n = len(player1)
         if n == 0:
             return self
@@ -262,9 +308,21 @@ class WSurfaceFactorGlicko(RatingSystem):
         self,
         player1: Union[int, np.ndarray, List[int]],
         player2: Union[int, np.ndarray, List[int]],
-        surfaces: Union[int, np.ndarray, List[int]],
+        surfaces: Union[int, np.ndarray, List[int]] = None,
+        day: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
-        """Predict P(player1 beats player2) on the supplied surface."""
+        """Predict P(player1 beats player2) on the supplied surface.
+
+        ``day`` is accepted (but ignored) so the unified ``predict_one_day``
+        dispatch can call ``predict_proba(..., day=cur_day, surfaces=...)``
+        uniformly across surface-aware systems.
+        """
+        del day
+        if surfaces is None:
+            raise ValueError(
+                "WSurfaceFactorGlicko.predict_proba requires `surfaces`; pass "
+                "via `surfaces=...` (the walk-forward dispatch threads it through)."
+            )
         if self._ratings is None:
             raise ValueError("Model not fitted. Call fit() first.")
         if isinstance(player1, (int, np.integer)) and isinstance(player2, (int, np.integer)):

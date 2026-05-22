@@ -361,3 +361,81 @@ def predict_single_factor(
 ) -> float:
     """Single-match win probability on a given surface."""
     return sigmoid((w_s * base_i + off_i_s) - (w_s * base_j + off_j_s))
+
+
+@njit(cache=True)
+def warm_start_ratings_factor(
+    num_players: int,
+    old_player_offsets: np.ndarray,
+    old_pd_days: np.ndarray,
+    old_pd_r_base: np.ndarray,
+    old_pd_r_off: np.ndarray,
+    new_player_offsets: np.ndarray,
+    new_pd_days: np.ndarray,
+    new_pd_r_base: np.ndarray,
+    new_pd_r_off: np.ndarray,
+) -> None:
+    """Transfer converged base + offset trajectories from old to new structures.
+
+    Same two-pointer merge as :func:`whr._numba_core.warm_start_ratings`, but
+    extended to copy the rank-1 factor model's four trajectories per player
+    (base + 3 surface offsets) in a single pass per player. Exact-day matches
+    copy the old values; new player-days extrapolate from the most recent prior.
+
+    Without this the refit during walk-forward effectively cold-starts from
+    ``pd_r_base = 0`` (Elo 1500) every day, and the configured
+    ``refit_max_iterations`` is far too small to reconverge — base ratings stay
+    near the prior and the model is much worse than plain WHR.
+    """
+    for player_id in range(num_players):
+        old_start = old_player_offsets[player_id]
+        old_end = old_player_offsets[player_id + 1]
+        new_start = new_player_offsets[player_id]
+        new_end = new_player_offsets[player_id + 1]
+
+        old_n = old_end - old_start
+        new_n = new_end - new_start
+
+        if old_n == 0 or new_n == 0:
+            continue
+
+        old_i = 0
+        new_i = 0
+        last_base = old_pd_r_base[old_start]
+        last_off_0 = old_pd_r_off[old_start, 0]
+        last_off_1 = old_pd_r_off[old_start, 1]
+        last_off_2 = old_pd_r_off[old_start, 2]
+
+        while new_i < new_n:
+            new_day = new_pd_days[new_start + new_i]
+
+            while old_i < old_n and old_pd_days[old_start + old_i] < new_day:
+                last_base = old_pd_r_base[old_start + old_i]
+                last_off_0 = old_pd_r_off[old_start + old_i, 0]
+                last_off_1 = old_pd_r_off[old_start + old_i, 1]
+                last_off_2 = old_pd_r_off[old_start + old_i, 2]
+                old_i += 1
+
+            if old_i < old_n and old_pd_days[old_start + old_i] == new_day:
+                # Exact match — copy converged values
+                base_val = old_pd_r_base[old_start + old_i]
+                off_0 = old_pd_r_off[old_start + old_i, 0]
+                off_1 = old_pd_r_off[old_start + old_i, 1]
+                off_2 = old_pd_r_off[old_start + old_i, 2]
+                new_pd_r_base[new_start + new_i] = base_val
+                new_pd_r_off[new_start + new_i, 0] = off_0
+                new_pd_r_off[new_start + new_i, 1] = off_1
+                new_pd_r_off[new_start + new_i, 2] = off_2
+                last_base = base_val
+                last_off_0 = off_0
+                last_off_1 = off_1
+                last_off_2 = off_2
+                old_i += 1
+            else:
+                # New day — extrapolate from most recent prior
+                new_pd_r_base[new_start + new_i] = last_base
+                new_pd_r_off[new_start + new_i, 0] = last_off_0
+                new_pd_r_off[new_start + new_i, 1] = last_off_1
+                new_pd_r_off[new_start + new_i, 2] = last_off_2
+
+            new_i += 1

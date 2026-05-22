@@ -33,6 +33,7 @@ from ._numba_core import (
     predict_proba_batch_factor,
     predict_single_factor,
     run_all_iterations,
+    warm_start_ratings_factor,
 )
 
 
@@ -403,11 +404,28 @@ class SurfaceFactorWHR(RatingSystem):
             self._last_refit_day = batch.day
 
         if batch.day - self._last_refit_day >= self.config.refit_interval:
+            # Warm-start: stash the converged trajectories before _build_data_structures
+            # overwrites them with zeros. Without this the cold-restart every refit
+            # leaves base ratings near the prior (Elo 1500) and the model
+            # underperforms plain WHR badly.
+            old_player_offsets = self._player_offsets
+            old_pd_days = self._pd_days
+            old_pd_r_base = self._pd_r_base
+            old_pd_r_off = self._pd_r_off
+
             self._build_data_structures(
                 self._stored_player1, self._stored_player2,
                 self._stored_scores, self._stored_days,
                 self._stored_surfaces, self._stored_weights, self._num_players,
             )
+            if (old_player_offsets is not None and old_pd_days is not None
+                    and old_pd_r_base is not None and old_pd_r_off is not None):
+                warm_start_ratings_factor(
+                    self._num_players,
+                    old_player_offsets, old_pd_days, old_pd_r_base, old_pd_r_off,
+                    self._player_offsets, self._pd_days,
+                    self._pd_r_base, self._pd_r_off,
+                )
             self._run_optimisation(self.config.refit_max_iterations)
             self._extract_current()
             self._last_refit_day = batch.day
