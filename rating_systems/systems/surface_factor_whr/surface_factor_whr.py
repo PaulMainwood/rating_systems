@@ -22,6 +22,7 @@ import numpy as np
 
 from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameBatch, GameDataset
+from ...data.checkpoint import load_checkpoint, save_checkpoint
 from ..whr._numba_core import (
     LN10_400,
     build_player_day_indices,
@@ -524,6 +525,63 @@ class SurfaceFactorWHR(RatingSystem):
             w = float(self._w_surfaces_arr[s])
             scores = w * (self._base_rating - self.config.initial_rating) + self._offset_rating[:, s]
         return np.argsort(-scores)[:n]
+
+    # ------------------------------------------------------------------ persistence
+
+    def save_state(self, path: str) -> None:
+        """Persist fitted state needed to predict.
+
+        Prediction reads ``_base_rating`` (per-player Elo-scale base),
+        ``_offset_rating`` (per player × surface) and ``_w_surfaces_arr``. The
+        base saver serialises none of these, so a reloaded model would have
+        ``_base_rating is None`` and raise "Model not fitted". Persisting them
+        makes a reload predict identically to the fitted model.
+        """
+        if not self._fitted or self._base_rating is None:
+            raise ValueError("Model must be fitted before saving state.")
+        arrays = {
+            "base_rating": self._base_rating,
+            "offset_rating": self._offset_rating,
+            "w_surfaces": self._w_surfaces_arr,
+        }
+        metadata = {
+            "system_class": self.__class__.__name__,
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_games_fitted": self._num_games_fitted,
+            "num_iterations": self._num_iterations,
+        }
+        save_checkpoint(path, arrays, metadata)
+
+    def load_state(self, path: str) -> None:
+        """Restore state saved by :meth:`save_state` (predict-ready)."""
+        arrays, metadata = load_checkpoint(path)
+        if "base_rating" not in arrays or "offset_rating" not in arrays:
+            raise ValueError(
+                f"State file {path!r} lacks the surface-factor WHR arrays — it "
+                "predates the persistence fix. Re-fit and re-save the model."
+            )
+        self._num_players = metadata["num_players"]
+        self._current_day = metadata["current_day"]
+        self._num_games_fitted = metadata.get("num_games_fitted", 0)
+        self._num_iterations = metadata.get("num_iterations", 0)
+        self._base_rating = np.ascontiguousarray(
+            arrays["base_rating"], dtype=np.float64)
+        self._offset_rating = np.ascontiguousarray(
+            arrays["offset_rating"], dtype=np.float64)
+        if "w_surfaces" in arrays:
+            self._w_surfaces_arr = np.ascontiguousarray(
+                arrays["w_surfaces"], dtype=np.float64)
+        # Mirror the base ratings into a PlayerRatings, exactly as fit() does,
+        # so the loaded object is a complete fitted-equivalent state (and the
+        # new-player extension in the prediction pipeline can find it).
+        self._ratings = PlayerRatings(
+            ratings=self._base_rating,
+            rd=np.full(self._num_players, self.config.initial_rd,
+                       dtype=np.float64),
+            metadata={"system": "surface_factor_whr", "config": self.config},
+        )
+        self._fitted = True
 
     # ------------------------------------------------------------------ housekeeping
 

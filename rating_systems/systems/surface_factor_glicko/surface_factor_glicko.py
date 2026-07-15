@@ -23,6 +23,7 @@ import numpy as np
 
 from ...base import PlayerRatings, RatingSystem, RatingSystemType
 from ...data import GameDataset
+from ...data.checkpoint import load_checkpoint, save_checkpoint
 from ._numba_core import (
     N_SURFACES,
     fit_all_days_factor,
@@ -416,6 +417,68 @@ class WSurfaceFactorGlicko(RatingSystem):
             self.config.min_rd, self.config.max_rd,
             int(n_train_days),
         )
+
+    # ------------------------------------------------------------------ persistence
+
+    def save_state(self, path: str) -> None:
+        """Persist fitted state, *including the surface-factor offsets*.
+
+        The base saver serialises only the base ``ratings``/``rd``. The rank-1
+        surface factor lives in ``_offset_rating``/``_offset_rd`` (per player ×
+        surface) and the per-surface coupling in ``_w_surfaces_arr``; without
+        them a reloaded model has ``None`` offsets and the njit predict kernel
+        fails to type-check. Saving them makes a reloaded model predict
+        identically to the fitted one.
+        """
+        if not self._fitted or self._ratings is None:
+            raise ValueError("Model must be fitted before saving state.")
+        if self._offset_rating is None or self._offset_rd is None:
+            raise ValueError(
+                "Surface-factor offsets are missing; cannot save a state that "
+                "would reload as fitted."
+            )
+        arrays = {
+            "ratings": self._ratings.ratings,
+            "offset_rating": self._offset_rating,
+            "offset_rd": self._offset_rd,
+            "w_surfaces": self._w_surfaces_arr,
+        }
+        if self._ratings.rd is not None:
+            arrays["rd"] = self._ratings.rd
+        if self._ratings.last_played is not None:
+            arrays["last_played"] = self._ratings.last_played
+        metadata = {
+            "system_class": self.__class__.__name__,
+            "num_players": self._num_players,
+            "current_day": self._current_day,
+            "num_games_fitted": self._num_games_fitted,
+        }
+        save_checkpoint(path, arrays, metadata)
+
+    def load_state(self, path: str) -> None:
+        """Restore state saved by :meth:`save_state`, including the offsets."""
+        arrays, metadata = load_checkpoint(path)
+        if "offset_rating" not in arrays or "offset_rd" not in arrays:
+            raise ValueError(
+                f"State file {path!r} lacks surface-factor offsets — it predates "
+                "the offset-persistence fix. Re-fit and re-save the model."
+            )
+        self._num_players = metadata["num_players"]
+        self._current_day = metadata["current_day"]
+        self._num_games_fitted = metadata.get("num_games_fitted", 0)
+        self._ratings = PlayerRatings(
+            ratings=arrays["ratings"],
+            rd=arrays.get("rd"),
+            last_played=arrays.get("last_played"),
+        )
+        self._offset_rating = np.ascontiguousarray(
+            arrays["offset_rating"], dtype=np.float64)
+        self._offset_rd = np.ascontiguousarray(
+            arrays["offset_rd"], dtype=np.float64)
+        if "w_surfaces" in arrays:
+            self._w_surfaces_arr = np.ascontiguousarray(
+                arrays["w_surfaces"], dtype=np.float64)
+        self._fitted = True
 
     # ------------------------------------------------------------------ housekeeping
 
