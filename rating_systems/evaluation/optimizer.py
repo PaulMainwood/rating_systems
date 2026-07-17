@@ -1116,9 +1116,15 @@ def optimize_disc(
 
 def optimize_kickscore(
     dataset: GameDataset,
-    var_constant_bounds: Tuple[float, float] = (0.01, 0.5),
-    var_matern_bounds: Tuple[float, float] = (0.01, 1.0),
-    lscale_bounds: Tuple[float, float] = (30, 2000),
+    # The original bounds — var_constant<=0.5, var_matern<=1.0, lscale<=2000 —
+    # excluded the answer, so no tune could ever have found it. A scale sweep on
+    # ATP put the optimum near prior var 7.5 with lscale ~1766-2728d, and
+    # Maystre et al. (KDD 2019) report ~7.47y (2728d) for tennis: both outside
+    # the old box. A prior variance capped at 1.5 leaves the model unable to
+    # express a confident prediction at all.
+    var_constant_bounds: Tuple[float, float] = (0.05, 6.0),
+    var_matern_bounds: Tuple[float, float] = (0.05, 12.0),
+    lscale_bounds: Tuple[float, float] = (180, 4000),
     maxiter: int = 20,
     max_test_days: Optional[int] = None,
     train_ratio: float = 0.7,
@@ -1148,8 +1154,15 @@ def optimize_kickscore(
     from ..systems.kickscore_rating import KickScoreRating
 
     fp = fixed_params or {}
-    fp.setdefault("max_iter", 30)
+    # 30 does not converge on a full tour history: EP hits the cap with
+    # max_diff ~2.2e-3 against tol 1e-3, and the extra iterations are worth
+    # ~0.002 Brier. Tune at the iteration count production will actually use.
+    fp.setdefault("max_iter", 100)
     fp.setdefault("refit_max_iterations", 1)
+    # Pin refit_interval too — otherwise tuning silently runs at the default 1
+    # while production runs 7, and the tuned params are optimal for a system
+    # that refits 7x more often than the deployed one.
+    fp.setdefault("refit_interval", 7)
     fp.setdefault("tol", 1e-3)
     fp.setdefault("ep_lr", 1.0)
 
