@@ -924,16 +924,23 @@ def run_iteration_jacobi_active(
     Run one Jacobi Newton-Raphson iteration, only updating active players.
 
     Parallel version: snapshots pd_r, then updates active players via prange.
-    Active array races are benign (only sets True for reactivation).
+
+    The result is the same whatever the thread count: the rating updates are
+    Jacobi, and the active set is updated afterwards, in order. Updating the
+    active set inside the parallel loop (as an earlier version did) races a
+    player's self-deactivation against reactivation by an opponent's thread,
+    which made identical runs differ. See the weighted version in
+    ``wwhr/_numba_core.py`` for the full account.
     """
     pd_r_read[:] = pd_r[:]  # Snapshot
-    max_change = 0.0
 
+    # Phase 1 (parallel): update the players active when the iteration began.
+    was_active = active.copy()
+    changes = np.zeros(num_players, dtype=np.float64)
     for player_id in prange(num_players):
-        if not active[player_id]:
+        if not was_active[player_id]:
             continue
-
-        change = update_single_player_jacobi(
+        changes[player_id] = update_single_player_jacobi(
             player_id,
             player_offsets,
             pd_days,
@@ -945,21 +952,30 @@ def run_iteration_jacobi_active(
             w2_r,
         )
 
+    # Phase 2 (sequential): deactivate converged players, then reactivate
+    # every opponent of a player that has not converged.
+    max_change = 0.0
+    for player_id in range(num_players):
+        if not was_active[player_id]:
+            continue
+        change = changes[player_id]
+        if change > max_change:
+            max_change = change
         if change < threshold:
             active[player_id] = False
-        else:
-            # Reactivate all opponents (benign race: only sets True)
-            pd_start = player_offsets[player_id]
-            pd_end = player_offsets[player_id + 1]
-            for pd_idx in range(pd_start, pd_end):
-                game_start = pd_game_offsets[pd_idx]
-                game_end = pd_game_offsets[pd_idx + 1]
-                for g in range(game_start, game_end):
-                    opp_pd = pd_game_opp_pd[g]
-                    opp_id = pd_to_player[opp_pd]
-                    active[opp_id] = True
 
-        max_change = max(max_change, change)
+    for player_id in range(num_players):
+        if not was_active[player_id] or changes[player_id] < threshold:
+            continue
+        pd_start = player_offsets[player_id]
+        pd_end = player_offsets[player_id + 1]
+        for pd_idx in range(pd_start, pd_end):
+            game_start = pd_game_offsets[pd_idx]
+            game_end = pd_game_offsets[pd_idx + 1]
+            for g in range(game_start, game_end):
+                opp_pd = pd_game_opp_pd[g]
+                opp_id = pd_to_player[opp_pd]
+                active[opp_id] = True
 
     return max_change
 
