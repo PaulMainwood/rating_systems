@@ -64,7 +64,12 @@ class GameDataset:
             raise ValueError(f"Missing required columns: {missing}")
 
         # Sort by day for sequential access
-        df = df.sort("Day")
+        # Stable sort: rows of one day keep their input order. Callers pass
+        # weights, surfaces and margins as separate arrays aligned to their
+        # own rows by position, so an order-unstable sort here could pair a
+        # match with another match's weight. Polars' default sort does not
+        # promise to keep equal keys in order.
+        df = df.sort("Day", maintain_order=True)
 
         # Extract arrays (zero-copy where possible)
         self._player1 = df["Player1"].to_numpy().astype(np.int64)
