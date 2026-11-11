@@ -69,8 +69,10 @@ def prob_win_tiebreak(p_server: float, p_returner: float) -> float:
 
     # First to 7, deuce at 6-6 (same structure as a game but to 7)
     # P(win without deuce) = sum over i=0..5 of C(6+i, i) * p^7 * q^i
+    # (7-0 to 7-5; 6-6 is counted below, and counting it here as well gave
+    # two equal players 61% and 61% of the tie-breaks)
     p_no_deuce = 0.0
-    for i in range(7):
+    for i in range(6):
         # C(6+i, i) * p^7 * q^i
         coeff = 1.0
         for j in range(1, i + 1):
