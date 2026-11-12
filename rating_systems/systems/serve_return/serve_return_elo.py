@@ -270,8 +270,13 @@ class ServeReturnElo(RatingSystem):
         player2: Union[int, np.ndarray, List[int]],
         best_of: Union[int, np.ndarray] = 3,
         day: Optional[int] = None,
+        surfaces: Optional[np.ndarray] = None,
     ) -> Union[float, np.ndarray]:
-        """Predict match win probability."""
+        """Predict match win probability.
+
+        ``surfaces`` is accepted so the serve-and-return family shares one
+        call; this system has no surface term and ignores it.
+        """
         if not self._fitted:
             raise ValueError("Model not fitted.")
 
